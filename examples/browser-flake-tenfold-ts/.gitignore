@@ -5,7 +5,9 @@ build/
 .env
 .env.local
 *.log
+*.tsbuildinfo
 .turbo/
 infra/tenfold.db
 infra/tenfold.db-journal
 .DS_Store
+coverage/
