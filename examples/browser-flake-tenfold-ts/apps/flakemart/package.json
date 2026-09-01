@@ -1,0 +1,12 @@
+{
+  "name": "flakemart",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "lint": "echo 'no lint configured for flakemart' && exit 0",
+    "test": "echo 'no tests for flakemart' && exit 0"
+  }
+}
