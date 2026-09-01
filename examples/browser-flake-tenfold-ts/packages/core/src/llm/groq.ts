@@ -20,6 +20,21 @@ export function getGroqClient(): Groq | null {
   return client;
 }
 
+/**
+ * Groq's `openai/gpt-oss-*` models (our defaults, see index.ts) are
+ * reasoning models: they spend tokens on a hidden chain-of-thought (surfaced
+ * as `message.reasoning`, not `message.content`) before writing the actual
+ * answer. Caught the hard way: a low `max_tokens` (60, for a one-word
+ * PASS/FAIL classification) let the model burn its whole budget on
+ * reasoning and return `content: ""` with `finish_reason: "length"` —
+ * silently, no error. Fixed with `reasoning_effort: "low"` (keeps it fast
+ * and cheap, appropriate for these small classification calls) plus enough
+ * headroom in max_tokens for reasoning AND the final answer, and a fallback
+ * that reads `reasoning` if `content` still comes back empty rather than
+ * returning "" without explanation.
+ */
+const MIN_MAX_TOKENS = 300;
+
 export async function chatJson(opts: {
   model: string;
   system: string;
@@ -35,8 +50,13 @@ export async function chatJson(opts: {
     ],
     temperature: 0,
     response_format: { type: "json_object" },
+    max_tokens: 1500,
+    // @ts-expect-error — reasoning_effort is supported by Groq's gpt-oss
+    // models but not yet in this SDK version's request types.
+    reasoning_effort: "low",
   });
-  return completion.choices[0]?.message?.content ?? "";
+  const message = completion.choices[0]?.message as { content?: string; reasoning?: string } | undefined;
+  return message?.content || message?.reasoning || "";
 }
 
 export async function chatText(opts: {
@@ -54,9 +74,12 @@ export async function chatText(opts: {
       { role: "user", content: opts.user },
     ],
     temperature: 0,
-    max_tokens: opts.maxTokens ?? 100,
+    max_tokens: Math.max(opts.maxTokens ?? 100, MIN_MAX_TOKENS),
+    // @ts-expect-error — see chatJson above.
+    reasoning_effort: "low",
   });
-  return completion.choices[0]?.message?.content ?? "";
+  const message = completion.choices[0]?.message as { content?: string; reasoning?: string } | undefined;
+  return message?.content || message?.reasoning || "";
 }
 
 /** Strips ```json fences models sometimes add despite instructions not to. */
