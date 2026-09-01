@@ -6,7 +6,7 @@ import {
   type TestPlanOptions,
 } from "../types.js";
 import { chatJson, stripFences, getGroqClient } from "../llm/groq.js";
-import { localCompile } from "./localCompile.js";
+import { localCompile, detectApplyCouponLine, detectClickAndConfirmLine } from "./localCompile.js";
 
 const SYSTEM_PROMPT = `You convert a numbered list of plain-English browser test steps into JSON.
 
@@ -16,11 +16,43 @@ Return ONLY a JSON object of the shape:
 Rules:
 - One input line becomes exactly one step, in order. Never merge or split lines.
 - "text" is the original line, verbatim.
-- "intent" is your best classification of the action.
-- "target" is a short natural-language description of the element acted on (omit for "wait").
+- "intent" is your best classification of the PRIMARY action.
+- "target" MUST name exactly ONE concrete element — a single button, link, or
+  input. Never a compound phrase like "the coupon input and apply button" —
+  pick the single element the intent's action applies to.
 - "value" is the literal text to type, option to choose, or URL to navigate to (omit if not applicable).
-- "expect" is REQUIRED on every step: a short natural-language description of what the page should show if this step succeeded. Infer it even if the input line doesn't state it explicitly.
-- No markdown fences, no commentary, no keys other than "steps".`;
+- "expect" is REQUIRED on every step: a short, specific, checkable description
+  of what the page should show if this step succeeded (a literal word/number/
+  percentage that would actually appear is far better than a vague summary).
+  Infer it even if the input line doesn't state it explicitly.
+- IMPORTANT for non-"assert" intents (navigate/click/type/select/wait):
+  "expect" describes only that the immediate mechanical action worked (the
+  button was clickable, the field accepted the value, the page navigated) —
+  never a downstream business outcome that a LATER step already checks. For
+  example, after typing a coupon code, expect "the coupon code is entered
+  and submitted", NOT "the discount is applied" — that claim belongs
+  entirely to whichever later "assert" step actually asks about the
+  discount. Getting this wrong makes a flaky page's failure show up on the
+  wrong step, which defeats the entire point of a first-failure histogram.
+- No markdown fences, no commentary, no keys other than "steps".
+
+Two compound-sentence conventions — a single English line often does two
+things at once; follow these exactly rather than inventing a compound target:
+
+1. "Enter/type/apply <value> ... " where the value is also submitted in the
+   same sentence (e.g. "apply coupon SAVE10", "enter promo code X and apply
+   it"): classify as intent "type", target = ONLY the input field (e.g.
+   "coupon code input"), value = the literal code/text. Do NOT also target
+   the submit button and do NOT add a separate step for the click — the
+   executor automatically clicks the nearest button matching "apply" or
+   "submit" right after filling the field whenever the original line
+   contains that word, so your job is just to get intent/target/value right
+   for the fill.
+2. "<Action> and confirm/verify/check that <condition>" (e.g. "Click
+   Checkout and confirm an order number appears"): classify by the ACTION's
+   intent (here "click"), target = ONLY the thing being acted on (here
+   "Checkout"), and expect = the confirmation clause verbatim (here "an
+   order number appears") — not a paraphrase combining both halves.`;
 
 export interface CompilePlanOptions {
   runs?: number;
@@ -39,10 +71,33 @@ export async function compilePlan(
   if (lines.length > 12) throw new Error("compilePlan: at most 12 steps are allowed");
 
   const compiledSteps = getGroqClient()
-    ? await compileWithLlm(lines, opts.model ?? process.env.PLAN_MODEL ?? "openai/gpt-oss-120b")
+    ? (await compileWithLlm(lines, targetUrl, opts.model ?? process.env.PLAN_MODEL ?? "openai/gpt-oss-120b")).map(
+        (s, i) => {
+          const line = lines[i]!;
+          // A handful of compound-sentence shapes are common enough (and
+          // tricky enough) that we don't trust LLM sampling variance with
+          // them even at temperature 0 — see the two detectors' own
+          // comments. When the raw line matches one, the deterministic
+          // result wins outright; otherwise the LLM's step is used as-is.
+          const override = detectApplyCouponLine(line) ?? detectClickAndConfirmLine(line);
+          return override ?? { ...s, text: s.text.trim() === line ? s.text : line };
+        },
+      )
     : localCompile(lines, targetUrl);
 
-  const steps = compiledSteps.map((s, index) => ({ ...s, index }));
+  // Belt-and-suspenders, regardless of compiler: a navigate step with no
+  // explicit URL in its own line means "go to the site under test." The LLM
+  // is told this in the prompt below, but a model that ignores it (e.g.
+  // hallucinating https://example.com for "Open the homepage") would
+  // otherwise silently point every run at the wrong site — worth guarding
+  // in code, not just in the prompt.
+  const withRealTargetUrl = compiledSteps.map((s) => {
+    if (s.intent !== "navigate") return s;
+    const hasExplicitUrl = /https?:\/\//.test(s.text) || /https?:\/\//.test(s.value ?? "");
+    return hasExplicitUrl ? s : { ...s, value: targetUrl };
+  });
+
+  const steps = withRealTargetUrl.map((s, index) => ({ ...s, index }));
 
   return TestPlanSchema.parse({
     targetUrl,
@@ -57,8 +112,12 @@ export async function compilePlan(
   });
 }
 
-async function compileWithLlm(lines: string[], model: string): Promise<CompiledStep[]> {
-  const userPrompt = lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
+async function compileWithLlm(lines: string[], targetUrl: string, model: string): Promise<CompiledStep[]> {
+  const userPrompt =
+    `The site under test is: ${targetUrl}\n` +
+    `If a step just says to open/visit the site or "the homepage" with no other URL mentioned, ` +
+    `use exactly that URL as its "value" — never invent a different one.\n\n` +
+    lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
 
   const attempt = async (extra?: string): Promise<CompiledStep[]> => {
     const raw = await chatJson({

@@ -11,39 +11,52 @@ export function localCompile(englishLines: string[], targetUrl: string): Compile
   return englishLines.map((raw, i) => compileLine(raw.trim(), i, targetUrl));
 }
 
+/**
+ * Detects "Go to X and apply/enter/type coupon CODE" — the one compound
+ * shape that turned out to trip up even the LLM compiler inconsistently
+ * (it would occasionally drop the "type SAVE10" half entirely and turn the
+ * whole line into a plain "click the cart" step). Exported so compilePlan.ts
+ * can apply it as a deterministic override on top of the LLM path for this
+ * one well-known tricky pattern specifically, rather than trusting sampling
+ * variance on every single run of what's likely to be Tenfold's most-run
+ * demo plan.
+ */
+export function detectApplyCouponLine(text: string): CompiledStep | null {
+  const lower = text.toLowerCase();
+  const quoted = firstQuoted(text);
+  const applyMatch = lower.match(/^go to (?:the )?(\w+)\s+and\s+(?:apply|enter|type)\s+(?:coupon\s+)?/);
+  if (!applyMatch) return null;
+  const code = extractCode(text) ?? quoted;
+  return {
+    text,
+    intent: "type",
+    target: "coupon code",
+    value: code ?? "",
+    expect: "the coupon code is entered and submitted",
+  };
+}
+
+/** "Click X and confirm/verify/check that Y" — see detectApplyCouponLine's comment. */
+export function detectClickAndConfirmLine(text: string): CompiledStep | null {
+  const clickAndConfirm = text.match(/^click\s+(?:on\s+)?(.+?)\s+and\s+(?:confirm|verify|check that)\s+(.+)$/i);
+  if (!clickAndConfirm) return null;
+  return {
+    text,
+    intent: "click",
+    target: clickAndConfirm[1]!.replace(/^["']|["']$/g, ""),
+    expect: clickAndConfirm[2]!,
+  };
+}
+
 function compileLine(text: string, i: number, targetUrl: string): CompiledStep {
   const lower = text.toLowerCase();
   const quoted = firstQuoted(text);
 
-  // --- compound: "Go to the cart and apply coupon SAVE10" -------------------
-  // §7 Flakemart's demo plan writes navigation and the flaky action as one
-  // English line. `runStep` (executeRun.ts) handles the implied navigation
-  // for any intent by scanning the full step text, so here we only need to
-  // produce the *primary* (type) action — with an expect that doesn't bake
-  // in the literal code, since a typed value never shows up in body innerText
-  // regardless of whether the type action itself succeeded.
-  const applyMatch = lower.match(/^go to (?:the )?(\w+)\s+and\s+(?:apply|enter|type)\s+(?:coupon\s+)?/);
-  if (applyMatch) {
-    const code = extractCode(text) ?? quoted;
-    return {
-      text,
-      intent: "type",
-      target: "coupon code",
-      value: code ?? "",
-      expect: "the coupon code is entered and submitted",
-    };
-  }
+  const applyCoupon = detectApplyCouponLine(text);
+  if (applyCoupon) return applyCoupon;
 
-  // --- compound: "Click Checkout and confirm an order number appears" -------
-  const clickAndConfirm = text.match(/^click\s+(?:on\s+)?(.+?)\s+and\s+(?:confirm|verify|check that)\s+(.+)$/i);
-  if (clickAndConfirm) {
-    return {
-      text,
-      intent: "click",
-      target: clickAndConfirm[1]!.replace(/^["']|["']$/g, ""),
-      expect: clickAndConfirm[2]!,
-    };
-  }
+  const clickAndConfirm = detectClickAndConfirmLine(text);
+  if (clickAndConfirm) return clickAndConfirm;
 
   // --- assert / confirm ----------------------------------------------------
   if (/^(confirm|verify|check that|assert|make sure)/.test(lower) || lower.includes("should show") || lower.includes("should see")) {
