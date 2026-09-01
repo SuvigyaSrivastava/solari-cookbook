@@ -16,6 +16,22 @@ import { URL } from "node:url";
  * Pass ?flake=0 on the /cart URL to disable the delay entirely (handler
  * attaches immediately) — this is what proves a STABLE verdict is also
  * possible, per the brief's Definition of Done.
+ *
+ * Pass ?layout=v2 (sticky via cookie, like ?flake) for the Workflow Memory
+ * demo hook (§11.4): it renames the "Add ... to Cart" buttons and the
+ * "Checkout" link — the two click-intent elements the canonical demo plan
+ * actually resolves through Workflow Memory — while leaving the coupon
+ * input, the injected flakiness, and everything else untouched. Run the
+ * demo plan once against the default layout, then again with ?layout=v2:
+ * the report should show the untouched coupon-input step reused from
+ * memory and the two renamed elements re-learned, live proof of "reuse
+ * what still works, verify, adapt when the page updates." (The brief's own
+ * §11.4 phrasing describes renaming the coupon button specifically and
+ * moving the cart link; this implementation's "apply the coupon" click is
+ * a heuristic in executeRun.ts rather than a resolver-tracked target — see
+ * the README's Workflow Memory section — so v2 instead renames the two
+ * elements that ARE resolved through memory, to make the demo actually
+ * show what it claims to.)
  */
 
 const PORT = Number(process.env.PORT ?? 3100);
@@ -40,12 +56,18 @@ const server = createServer(async (req, res) => {
     }
     const flakeSetting = flakeQueryParam ?? cookies.flake ?? "1";
 
+    const layoutQueryParam = url.searchParams.get("layout");
+    if (layoutQueryParam !== null) {
+      setCookie(res, "layout", layoutQueryParam);
+    }
+    const layout = (layoutQueryParam ?? cookies.layout ?? "v1") === "v2" ? "v2" : "v1";
+
     if (url.pathname === "/health") {
       return sendJson(res, 200, { ok: true, service: "flakemart", time: new Date().toISOString() });
     }
 
     if (url.pathname === "/") {
-      return sendHtml(res, 200, renderHome());
+      return sendHtml(res, 200, renderHome(layout));
     }
 
     if (url.pathname === "/cart") {
@@ -55,7 +77,7 @@ const server = createServer(async (req, res) => {
         cart = [...cart, add];
         setCookie(res, "cart", JSON.stringify(cart));
       }
-      return sendHtml(res, 200, renderCart(cart, cookies.discount === "10", flakeSetting));
+      return sendHtml(res, 200, renderCart(cart, cookies.discount === "10", flakeSetting, layout));
     }
 
     if (url.pathname === "/checkout") {
@@ -135,18 +157,19 @@ ${body}
 </html>`;
 }
 
-function renderHome() {
+function renderHome(pageLayout) {
+  const addLabel = (name) => (pageLayout === "v2" ? `Add to Bag: ${escapeHtml(name)}` : `Add ${escapeHtml(name)} to Cart`);
   const products = PRODUCTS.map(
     (p) => `
     <div class="product">
       <div><strong>${escapeHtml(p.name)}</strong><br/>$${p.price.toFixed(2)}</div>
-      <a class="btn" href="/cart?add=${p.slug}" data-testid="add-${p.slug}">Add ${escapeHtml(p.name)} to Cart</a>
+      <a class="btn" href="/cart?add=${p.slug}" data-testid="add-${p.slug}">${addLabel(p.name)}</a>
     </div>`,
   ).join("");
   return layout("Home", `${nav("/")}<h1>Flakemart</h1><p>Everyday essentials. Deliberately flaky checkout — see README.</p>${products}`);
 }
 
-function renderCart(cart, discountApplied, flakeSetting) {
+function renderCart(cart, discountApplied, flakeSetting, pageLayout) {
   const items = cart.length
     ? cart
         .map((slug) => PRODUCTS.find((p) => p.slug === slug))
@@ -166,7 +189,7 @@ function renderCart(cart, discountApplied, flakeSetting) {
       <button id="apply-btn" class="btn" data-testid="apply-coupon">Apply</button>
     </div>
     <div id="totals">Subtotal: $${subtotal.toFixed(2)}</div>
-    <p style="margin-top:24px"><a class="btn" href="/checkout" data-testid="go-checkout">Checkout</a></p>
+    <p style="margin-top:24px"><a class="btn" href="/checkout" data-testid="go-checkout">${pageLayout === "v2" ? "Confirm Order" : "Place Order"}</a></p>
     <script>
       (function () {
         var flakeOff = ${flakeOff ? "true" : "false"};
