@@ -1,5 +1,6 @@
 import type { Locator, Page } from "playwright-core";
 import type { Step } from "../types.js";
+import type { LocatorSpec } from "../memory/types.js";
 import { chatJson, stripFences, getGroqClient } from "../llm/groq.js";
 
 export class ElementNotFoundError extends Error {
@@ -9,18 +10,29 @@ export class ElementNotFoundError extends Error {
   }
 }
 
+export interface ResolvedTarget {
+  locator: Locator;
+  /** How this was found — persisted to Workflow Memory (§11) on success. */
+  spec: LocatorSpec;
+}
+
 /**
  * Resolves a step's natural-language `target` to a concrete Playwright
- * Locator. Deterministic role/text/testid heuristics run first — they're
- * fast, free, and cover the overwhelming majority of well-built pages
- * (including our own Flakemart). The LLM resolver only kicks in when those
- * all come up empty AND GROQ_API_KEY is set, exactly per §4.3 of the brief
- * ("prefer getByRole/getByText; CSS is last resort").
+ * Locator, AND to the portable `LocatorSpec` that found it — the spec is
+ * what Workflow Memory (§11) writes to `step_memory` so a later run against
+ * the same page can skip straight to `resolveFromSpec` instead of paying
+ * for this whole function (including its LLM fallback) again.
+ *
+ * Deterministic role/text/testid heuristics run first — they're fast, free,
+ * and cover the overwhelming majority of well-built pages (including our
+ * own Flakemart). The LLM resolver only kicks in when those all come up
+ * empty AND GROQ_API_KEY is set, exactly per §4.3 of the brief ("prefer
+ * getByRole/getByText; CSS is last resort").
  *
  * Resolutions are cached per (step index, snapshot hash) within a run by the
  * caller (executeRun.ts) — this function itself is stateless.
  */
-export async function resolveTarget(page: Page, step: Step): Promise<Locator> {
+export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTarget> {
   if (!step.target) {
     throw new ElementNotFoundError("(no target specified)");
   }
@@ -28,30 +40,53 @@ export async function resolveTarget(page: Page, step: Step): Promise<Locator> {
   const quoted = firstQuoted(target) ?? firstQuoted(step.value ?? "");
   const needle = quoted ?? target;
 
-  const candidates: Array<() => Locator> = [];
+  const candidates: Array<{ make: () => Locator; spec: LocatorSpec }> = [];
 
   if (step.intent === "click") {
-    candidates.push(() => page.getByRole("button", { name: needle, exact: false }));
-    candidates.push(() => page.getByRole("link", { name: needle, exact: false }));
+    candidates.push({
+      make: () => page.getByRole("button", { name: needle, exact: false }),
+      spec: { kind: "role", role: "button", name: needle },
+    });
+    candidates.push({
+      make: () => page.getByRole("link", { name: needle, exact: false }),
+      spec: { kind: "role", role: "link", name: needle },
+    });
   }
   if (step.intent === "type") {
-    candidates.push(() => page.getByPlaceholder(needle, { exact: false }));
-    candidates.push(() => page.getByLabel(needle, { exact: false }));
-    candidates.push(() => page.getByRole("textbox", { name: needle, exact: false }));
+    candidates.push({
+      make: () => page.getByPlaceholder(needle, { exact: false }),
+      spec: { kind: "role", role: "textbox", name: needle },
+    });
+    candidates.push({
+      make: () => page.getByLabel(needle, { exact: false }),
+      spec: { kind: "role", role: "textbox", name: needle },
+    });
+    candidates.push({
+      make: () => page.getByRole("textbox", { name: needle, exact: false }),
+      spec: { kind: "role", role: "textbox", name: needle },
+    });
   }
   if (step.intent === "select") {
-    candidates.push(() => page.getByLabel(needle, { exact: false }));
-    candidates.push(() => page.getByRole("combobox", { name: needle, exact: false }));
+    candidates.push({
+      make: () => page.getByLabel(needle, { exact: false }),
+      spec: { kind: "role", role: "combobox", name: needle },
+    });
+    candidates.push({
+      make: () => page.getByRole("combobox", { name: needle, exact: false }),
+      spec: { kind: "role", role: "combobox", name: needle },
+    });
   }
   // Generic fallbacks that apply regardless of intent.
-  candidates.push(() => page.getByText(needle, { exact: false }));
-  candidates.push(() => page.locator(`[data-testid="${slugify(needle)}"]`));
-  candidates.push(() => page.locator(`[data-testid*="${slugify(needle)}"]`));
+  candidates.push({ make: () => page.getByText(needle, { exact: false }), spec: { kind: "text", text: needle } });
+  const testidCss = `[data-testid="${slugify(needle)}"]`;
+  const testidCssContains = `[data-testid*="${slugify(needle)}"]`;
+  candidates.push({ make: () => page.locator(testidCss), spec: { kind: "css", css: testidCss } });
+  candidates.push({ make: () => page.locator(testidCssContains), spec: { kind: "css", css: testidCssContains } });
 
-  for (const make of candidates) {
+  for (const { make, spec } of candidates) {
     try {
       const loc = make().first();
-      if ((await loc.count()) > 0) return loc;
+      if ((await loc.count()) > 0) return { locator: loc, spec };
     } catch {
       // invalid selector shape for this candidate type — try the next one
     }
@@ -65,22 +100,51 @@ export async function resolveTarget(page: Page, step: Step): Promise<Locator> {
   // scan: does every "significant" word in the target appear somewhere in
   // this candidate's accessible name, in any order?
   if (step.intent === "click" || step.intent === "type" || step.intent === "select") {
-    const role = step.intent === "click" ? (["button", "link"] as const) : (["textbox", "combobox"] as const);
-    for (const r of role) {
-      const loc = await keywordScan(page, r, needle);
-      if (loc) return loc;
+    const roles = step.intent === "click" ? (["button", "link"] as const) : (["textbox", "combobox"] as const);
+    for (const r of roles) {
+      const found = await keywordScan(page, r, needle);
+      if (found) return { locator: found.locator, spec: { kind: "role", role: r, name: found.name } };
     }
   }
 
   if (getGroqClient()) {
-    const llmLocator = await resolveWithLlm(page, step);
-    if (llmLocator) return llmLocator;
+    const llmResult = await resolveWithLlm(page, step);
+    if (llmResult) return llmResult;
   }
 
   throw new ElementNotFoundError(target);
 }
 
-async function resolveWithLlm(page: Page, step: Step): Promise<Locator | null> {
+/**
+ * The reuse half of Workflow Memory (§11.2 step 2): given a spec that
+ * worked on a previous run, try to rebuild it and confirm it STILL matches
+ * exactly one element. Deliberately stricter than resolveTarget's own
+ * candidates (which take the first match of several strategies) — a
+ * remembered locator that now matches zero or more-than-one elements is
+ * exactly the "page drifted" signal that should trigger a re-learn instead
+ * of silently clicking the wrong thing.
+ */
+export async function resolveFromSpec(page: Page, spec: LocatorSpec): Promise<Locator | null> {
+  try {
+    const loc = locatorForSpec(page, spec);
+    const count = await loc.count();
+    return count === 1 ? loc.first() : null;
+  } catch {
+    return null;
+  }
+}
+
+function locatorForSpec(page: Page, spec: LocatorSpec): Locator {
+  if (spec.kind === "role") {
+    return page.getByRole(spec.role as Parameters<Page["getByRole"]>[0], { name: spec.name, exact: false });
+  }
+  if (spec.kind === "text") {
+    return page.getByText(spec.text, { exact: false });
+  }
+  return page.locator(spec.css);
+}
+
+async function resolveWithLlm(page: Page, step: Step): Promise<ResolvedTarget | null> {
   let snapshot: string;
   try {
     // Playwright >= 1.49 ARIA snapshot, trimmed per §4.3 step 1.
@@ -100,16 +164,19 @@ async function resolveWithLlm(page: Page, step: Step): Promise<Locator | null> {
         "Prefer role+name. Use css only as a last resort.",
       user: `Target: ${step.target}\n\nARIA snapshot:\n${snapshot}`,
     });
-    const spec = JSON.parse(stripFences(raw));
-    let loc: Locator | null = null;
-    if (spec.role && spec.name) {
-      loc = page.getByRole(spec.role, { name: spec.name, exact: false });
-    } else if (spec.text) {
-      loc = page.getByText(spec.text, { exact: false });
-    } else if (spec.css) {
-      loc = page.locator(spec.css);
-    }
-    if (loc && (await loc.first().count()) > 0) return loc.first();
+    const rawSpec = JSON.parse(stripFences(raw));
+    const spec: LocatorSpec | null =
+      rawSpec.role && rawSpec.name
+        ? { kind: "role", role: rawSpec.role, name: rawSpec.name }
+        : rawSpec.text
+          ? { kind: "text", text: rawSpec.text }
+          : rawSpec.css
+            ? { kind: "css", css: rawSpec.css }
+            : null;
+    if (!spec) return null;
+
+    const loc = locatorForSpec(page, spec);
+    if ((await loc.first().count()) > 0) return { locator: loc.first(), spec };
     return null;
   } catch {
     return null;
@@ -137,7 +204,7 @@ function significantWords(text: string): string[] {
  * and a full LLM resolver call. Bounded to the first 30 matches on the page
  * so a pathological page can't make this scan expensive.
  */
-async function keywordScan(page: Page, role: string, needle: string): Promise<Locator | null> {
+async function keywordScan(page: Page, role: string, needle: string): Promise<{ locator: Locator; name: string } | null> {
   const words = significantWords(needle);
   if (words.length === 0) return null;
   const locator = page.getByRole(role as Parameters<Page["getByRole"]>[0]);
@@ -145,7 +212,7 @@ async function keywordScan(page: Page, role: string, needle: string): Promise<Lo
   for (let i = 0; i < count; i++) {
     const el = locator.nth(i);
     const name = (await el.innerText().catch(() => "")).toLowerCase();
-    if (words.every((w) => name.includes(w))) return el;
+    if (words.every((w) => name.includes(w))) return { locator: el, name };
   }
   return null;
 }

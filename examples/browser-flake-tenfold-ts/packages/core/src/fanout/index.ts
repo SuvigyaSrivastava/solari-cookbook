@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { RunResult, TenfoldEvent, TenfoldReport, TestPlan } from "../types.js";
 import type { SolariClient } from "../solari/types.js";
+import type { MemoryContext } from "../memory/applyMemory.js";
 import { executeRun } from "../execute/executeRun.js";
 import { analyze } from "../analyze/index.js";
 
@@ -10,6 +11,8 @@ export interface RunTenfoldOptions {
   staggerMs?: number;
   onEvent?: (event: TenfoldEvent) => void;
   mode: "live" | "mock";
+  /** Workflow Memory (§11) — omit entirely to run with memory disabled. */
+  memory?: MemoryContext;
 }
 
 /**
@@ -29,8 +32,20 @@ export async function runTenfold(plan: TestPlan, opts: RunTenfoldOptions, client
       emit({ type: "run.started", runId, runIndex, at: new Date().toISOString() });
       const result = await executeRun(plan, client, runIndex, {
         screenshotDir: opts.screenshotDir,
-        onStepCompleted: (step) =>
-          emit({ type: "step.completed", runId, runIndex, step, at: new Date().toISOString() }),
+        memory: opts.memory,
+        onStepCompleted: (step) => {
+          emit({ type: "step.completed", runId, runIndex, step, at: new Date().toISOString() });
+          if (step.memory === "relearned" && step.relearnReason) {
+            emit({
+              type: "step.relearned",
+              runId,
+              runIndex,
+              stepIndex: step.index,
+              reason: step.relearnReason,
+              at: new Date().toISOString(),
+            });
+          }
+        },
       });
       emit({ type: "run.finished", runId, runIndex, result, at: new Date().toISOString() });
       if (result.replayUrl) {
@@ -74,7 +89,7 @@ export async function runTenfold(plan: TestPlan, opts: RunTenfoldOptions, client
         },
   );
 
-  const report = analyze(runId, plan, perRun, opts.mode);
+  const report = analyze(runId, plan, perRun, opts.mode, Boolean(opts.memory));
   emit({ type: "report.ready", runId, report, at: new Date().toISOString() });
   return report;
 }

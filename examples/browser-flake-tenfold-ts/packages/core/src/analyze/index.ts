@@ -26,6 +26,7 @@ export function analyze(
   plan: TestPlan,
   perRun: RunResult[],
   mode: "live" | "mock",
+  memoryEnabled = false,
 ): TenfoldReport {
   const runs = perRun.length;
   const passed = perRun.filter((r) => r.status === "passed").length;
@@ -74,7 +75,43 @@ export function analyze(
     createdAt: createdAt.toISOString(),
     replaysExpireAt: replaysExpireAt.toISOString(),
     mode,
+    memory: memoryEnabled ? summarizeMemory(perRun) : undefined,
   };
+}
+
+/**
+ * Workflow Memory (§11.3): "Reused 4/5 steps from memory · re-learned step
+ * 3 (page structure changed) · LLM calls: 2 (was 10 on first run) ·
+ * resolver cost down 80%". `resolverCallsMade` counts only "learned"/
+ * "relearned" steps — a "reused" step is exactly the resolver call this
+ * system exists to skip. `resolverCallsBaseline` is what every run would
+ * have cost with memory off: one resolver call per (targeted step × run).
+ */
+function summarizeMemory(perRun: RunResult[]): NonNullable<TenfoldReport["memory"]> {
+  let reused = 0;
+  let relearned = 0;
+  let resolverCallsMade = 0;
+  let resolverCallsBaseline = 0;
+
+  for (const run of perRun) {
+    for (const step of run.steps) {
+      if (!step.memory || step.memory === "resolved") continue;
+      resolverCallsBaseline += 1;
+      if (step.memory === "reused") {
+        reused += 1;
+      } else {
+        // "learned" (first time) or "relearned" (memory existed but was
+        // distrusted) both paid for a fresh resolve.
+        resolverCallsMade += 1;
+        if (step.memory === "relearned") relearned += 1;
+      }
+    }
+  }
+
+  const costReductionPct =
+    resolverCallsBaseline > 0 ? Math.round((1 - resolverCallsMade / resolverCallsBaseline) * 100) : 0;
+
+  return { reused, relearned, resolverCallsMade, resolverCallsBaseline, costReductionPct };
 }
 
 function percentile(sortedAsc: number[], p: number): number {

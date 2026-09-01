@@ -6,11 +6,21 @@ import type { SolariClient } from "../solari/types.js";
 import { durationMsToBrowserHours } from "../solari/index.js";
 import { resolveTarget, ElementNotFoundError } from "./resolveTarget.js";
 import { verifyExpect } from "./verifyExpect.js";
+import {
+  resolveWithMemory,
+  stepTextHash,
+  RelearnFailedError,
+  type MemoryContext,
+  type MemoryResolution,
+} from "../memory/applyMemory.js";
+import { simhash } from "../memory/simhash.js";
 
 export interface ExecuteRunOptions {
   perStepTimeoutMs?: number;
   screenshotDir?: string;
   onStepCompleted?: (result: StepResult) => void;
+  /** Workflow Memory (§11) — omit entirely to run with memory disabled. */
+  memory?: MemoryContext;
 }
 
 class StepTimeoutError extends Error {
@@ -76,11 +86,37 @@ export async function executeRun(
       const remaining = Math.max(1, Math.min(perStepTimeoutMs, deadline - Date.now()));
       const t0 = Date.now();
       try {
-        await withTimeout(runStep(session.page, step, plan), remaining);
+        const memoryResolution = await withTimeout(runStep(session.page, step, plan, opts.memory), remaining);
         const verify = await withTimeout(verifyExpect(session.page, step.expect, step.intent), remaining);
         const durationMs = Date.now() - t0;
 
         if (!verify.passed) {
+          // The action itself succeeded (didn't throw) but the page didn't
+          // show what was expected. §11.2 step 3 treats this as a drift
+          // signal too, but ONLY when we got here by REUSING a memory
+          // shortcut ("reused") — we can't tell "the site actually broke"
+          // from "memory pointed us at the wrong element" without a fresh
+          // look. "learned"/"relearned" already paid for a fresh resolve
+          // this same step, so a failing verify there is a real site
+          // assertion failure, not a memory artifact — no retry needed.
+          if (opts.memory && memoryResolution?.source === "reused") {
+            const relearned = await retryWithFreshResolve(session.page, step, plan);
+            const revalidated = await withTimeout(verifyExpect(session.page, step.expect, step.intent), remaining);
+            if (revalidated.passed) {
+              await recordMemorySuccess(opts.memory, step, relearned);
+              const result: StepResult = {
+                index: step.index,
+                text: step.text,
+                status: "passed",
+                durationMs: Date.now() - t0,
+                memory: relearned.source,
+                relearnReason: relearned.relearnReason,
+              };
+              steps.push(result);
+              opts.onStepCompleted?.(result);
+              continue;
+            }
+          }
           const result: StepResult = {
             index: step.index,
             text: step.text,
@@ -89,6 +125,7 @@ export async function executeRun(
             cause: "ASSERTION_FAILED",
             reason: verify.reason,
             screenshotPath: await maybeScreenshot(session.page, opts.screenshotDir, runIndex, step.index),
+            memory: memoryResolution?.source,
           };
           steps.push(result);
           firstFailureStep = step.index;
@@ -97,11 +134,17 @@ export async function executeRun(
           break;
         }
 
+        if (opts.memory && memoryResolution && memoryResolution.source !== "resolved") {
+          await recordMemorySuccess(opts.memory, step, memoryResolution);
+        }
+
         const result: StepResult = {
           index: step.index,
           text: step.text,
           status: "passed",
           durationMs,
+          memory: memoryResolution?.source,
+          relearnReason: memoryResolution?.relearnReason,
         };
         steps.push(result);
         opts.onStepCompleted?.(result);
@@ -217,7 +260,14 @@ async function maybeClickSubmit(page: Page, step: Step): Promise<void> {
   }
 }
 
-async function runStep(page: Page, step: Step, plan: TestPlan): Promise<void> {
+/**
+ * Returns the MemoryResolution used, for click/type/select steps — that's
+ * what the caller needs to persist to Workflow Memory (§11) once the step's
+ * whole outcome (action + expect) is known to have actually succeeded.
+ * navigate/wait/assert never touch memory (nothing to resolve) and return
+ * undefined.
+ */
+async function runStep(page: Page, step: Step, plan: TestPlan, memory?: MemoryContext): Promise<MemoryResolution | undefined> {
   if (step.intent !== "navigate") {
     await ensureImpliedNavigation(page, step, plan);
   }
@@ -230,33 +280,90 @@ async function runStep(page: Page, step: Step, plan: TestPlan): Promise<void> {
         throw new NavigationError(`${url} responded with HTTP ${response.status()}`);
       }
       await detectCaptcha(page, plan);
-      return;
+      return undefined;
     }
-    case "click": {
-      const locator = await resolveTarget(page, step);
-      await locator.click();
-      return;
-    }
-    case "type": {
-      const locator = await resolveTarget(page, step);
-      await locator.fill(step.value ?? "");
-      await maybeClickSubmit(page, step);
-      return;
-    }
+    case "click":
+    case "type":
     case "select": {
-      const locator = await resolveTarget(page, step);
-      await locator.selectOption(step.value ?? "");
-      return;
+      const resolution = await resolveWithMemory(page, step, memory);
+      await performAction(page, step, resolution.locator);
+      return resolution;
     }
     case "wait": {
       await page.waitForLoadState("networkidle").catch(() => undefined);
-      return;
+      return undefined;
     }
     case "assert": {
       // No action — verification happens uniformly after this switch.
-      return;
+      return undefined;
     }
   }
+}
+
+async function performAction(page: Page, step: Step, locator: Awaited<ReturnType<typeof resolveTarget>>["locator"]): Promise<void> {
+  switch (step.intent) {
+    case "click":
+      await locator.click();
+      return;
+    case "type":
+      await locator.fill(step.value ?? "");
+      await maybeClickSubmit(page, step);
+      return;
+    case "select":
+      await locator.selectOption(step.value ?? "");
+      return;
+    default:
+      return;
+  }
+}
+
+/**
+ * §11.2 step 3-4: a REUSED memory locator's action succeeded but the
+ * expect check didn't — bypass memory entirely and re-resolve fresh before
+ * trusting that as a real site failure. If the fresh resolve itself can't
+ * find the element either, that's specifically "our memory was stale AND
+ * couldn't recover" (§11.2 step 4) — thrown as RelearnFailedError so it
+ * lands on NEEDS_HUMAN rather than a plain ELEMENT_NOT_FOUND.
+ */
+async function retryWithFreshResolve(page: Page, step: Step, plan: TestPlan): Promise<MemoryResolution> {
+  try {
+    if (step.intent !== "navigate") await ensureImpliedNavigation(page, step, plan);
+    const resolved = await resolveTarget(page, step);
+    await performAction(page, step, resolved.locator);
+    const fingerprint = await currentPageFingerprint(page);
+    return { ...resolved, source: "relearned", relearnReason: "reused locator's expect check failed; re-resolved fresh", fingerprint };
+  } catch (err) {
+    if (err instanceof ElementNotFoundError) {
+      throw new RelearnFailedError(step.target ?? step.text, "reused locator's expect check failed, and a fresh resolve found nothing");
+    }
+    throw err;
+  }
+}
+
+async function currentPageFingerprint(page: Page): Promise<string> {
+  try {
+    const snapshot = await (page.locator("body") as any).ariaSnapshot();
+    return simhash(snapshot);
+  } catch {
+    return simhash(await page.title().catch(() => ""));
+  }
+}
+
+async function recordMemorySuccess(memory: MemoryContext, step: Step, resolution: MemoryResolution): Promise<void> {
+  if (!step.target || !resolution.fingerprint) return;
+  await memory.store
+    .recordSuccess(
+      {
+        targetHost: memory.targetHost,
+        stepTextHash: stepTextHash(step.text),
+        locator: resolution.spec,
+        fingerprint: resolution.fingerprint,
+        expectText: step.expect,
+        reason: resolution.relearnReason,
+      },
+      resolution.source === "reused",
+    )
+    .catch(() => undefined); // memory is an optimization — never fail a run over a write error
 }
 
 class NavigationError extends Error {
@@ -284,6 +391,11 @@ function classifyError(err: unknown): Cause {
   const message = err instanceof Error ? err.message.toLowerCase() : "";
 
   if (name === "CaptchaBlockedError") return "CAPTCHA_BLOCKED";
+  // Checked before the plain ElementNotFoundError case below: a
+  // RelearnFailedError means Workflow Memory (§11.2 step 4) already tried
+  // reuse, then a fresh re-resolve, and both failed — a distinct signal
+  // from a first-time element-not-found with no memory involved at all.
+  if (name === "RelearnFailedError" || err instanceof RelearnFailedError) return "NEEDS_HUMAN";
   if (name === "ElementNotFoundError" || err instanceof ElementNotFoundError) return "ELEMENT_NOT_FOUND";
   if (name === "NavigationError") return "NAVIGATION_ERROR";
   if (name === "StepTimeoutError" || name === "HardDeadlineError" || message.includes("timeout")) {
