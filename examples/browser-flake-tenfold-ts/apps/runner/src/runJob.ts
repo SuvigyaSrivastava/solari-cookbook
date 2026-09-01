@@ -1,4 +1,4 @@
-import { compilePlan, createSolariClient, runTenfold, type TestPlanOptions } from "@tenfold/core";
+import { compilePlan, createSolariClient, runTenfold, hostOf, type StepMemoryStore, type TestPlanOptions } from "@tenfold/core";
 import type { Store } from "./store.js";
 import { publish } from "./pubsub.js";
 import { createSemaphore } from "./concurrency.js";
@@ -26,7 +26,7 @@ export interface StartRunInput {
  * persisted (so a late SSE subscriber can replay history) and published
  * live (so an already-connected one gets it in real time).
  */
-export function startRun(store: Store, input: StartRunInput): void {
+export function startRun(store: Store, stepMemoryStore: StepMemoryStore, input: StartRunInput): void {
   const semaphore = input.mode === "byok" ? byokSemaphore : demoSemaphore;
 
   void (async () => {
@@ -49,6 +49,11 @@ export function startRun(store: Store, input: StartRunInput): void {
           runId: input.runId,
           mode: client.mode,
           screenshotDir,
+          memory: {
+            store: stepMemoryStore,
+            targetHost: hostOf(input.targetUrl),
+            fingerprintThresholdBits: Number(process.env.MEMORY_FINGERPRINT_THRESHOLD_BITS ?? 12),
+          },
           onEvent: (event) => {
             void store.appendEvent(input.runId, event);
             publish(input.runId, event);

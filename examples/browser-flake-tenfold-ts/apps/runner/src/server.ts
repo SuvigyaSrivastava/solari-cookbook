@@ -4,6 +4,7 @@ import { streamSSE } from "hono/streaming";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import type { StepMemoryStore } from "@tenfold/core";
 import type { Store } from "./store.js";
 import { startRun, screenshotPath } from "./runJob.js";
 import { subscribe } from "./pubsub.js";
@@ -26,7 +27,7 @@ const CreateRunSchema = z.object({
     .optional(),
 });
 
-export function createServer(store: Store) {
+export function createServer(store: Store, stepMemoryStore: StepMemoryStore) {
   const app = new Hono();
 
   app.use(
@@ -98,7 +99,7 @@ export function createServer(store: Store) {
     if (mode === "demo") await store.recordIpRun(ip);
     await store.recordRunCreated(runs);
 
-    startRun(store, {
+    startRun(store, stepMemoryStore, {
       runId,
       targetUrl: parsed.data.targetUrl,
       steps: parsed.data.steps,

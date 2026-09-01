@@ -63,3 +63,25 @@ create table if not exists ip_runs (
   count int not null default 0,
   primary key (day, ip)
 );
+
+-- Workflow Memory (§11.1): Tenfold remembers how it resolved a step against
+-- a given site and reuses that resolution instead of paying for a fresh LLM
+-- resolver call on every run, as long as the page hasn't drifted since.
+-- Locators, a page-structure fingerprint, and a one-line reason ONLY — never
+-- page content, form values, or anything a user typed (§11.1's explicit
+-- rule). Written by apps/runner/src/postgresStepMemoryStore.ts.
+create table if not exists step_memory (
+  id uuid primary key default gen_random_uuid(),
+  target_host text not null,          -- hostname only; memory is per site
+  step_text_hash text not null,       -- sha256 of the normalized English step
+  locator jsonb not null,             -- { kind: "role"|"text"|"css", ... } from the resolver
+  fingerprint text not null,          -- simhash of the aria snapshot it was resolved against
+  expect_text text,                   -- the expect that confirmed it
+  reason text,                        -- resolver's/relearn's one-line reason for this choice
+  hits int not null default 0,
+  misses int not null default 0,
+  last_verified_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  unique (target_host, step_text_hash)
+);
+create index if not exists step_memory_host_idx on step_memory(target_host);
