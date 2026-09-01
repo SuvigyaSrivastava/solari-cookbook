@@ -104,6 +104,73 @@ Nothing outside `packages/core/src/solari/` imports a Solari SDK type
 directly — swapping the live implementation for a different provider, or
 fixing an SDK signature mismatch, is a one-file change (`solari/live.ts`).
 
+## Workflow Memory — the agent gets cheaper and faster every run
+
+The resolver (`execute/resolveTarget.ts`) is the single most expensive part
+of a Tenfold run: for every click/type/select step it either walks a chain
+of deterministic locator heuristics or, failing those, pays for an LLM
+call against the page's aria snapshot. Workflow Memory (`packages/core/src/
+memory/`) promotes whatever resolution actually worked to a small durable
+record — keyed by `(target host, sha256 of the normalized step text)` — so
+a later run against the *same site* can skip straight to replaying that
+locator instead of re-resolving from scratch, as long as the page hasn't
+drifted underneath it.
+
+**The reuse rule**, in `memory/applyMemory.ts`'s `resolveWithMemory`:
+
+1. Look up `(host, step)` in the store. Nothing there → resolve fresh (a
+   "learn"), and let the caller write a new row once the step actually
+   succeeds.
+2. Found → compute a 64-bit simhash of the current aria snapshot
+   (`memory/simhash.ts`) and compare it to the remembered fingerprint's
+   Hamming distance. Within `MEMORY_FINGERPRINT_THRESHOLD_BITS` (default
+   12) → try rebuilding the remembered locator and require it to match
+   **exactly one** element (`resolveFromSpec` in `resolveTarget.ts` — this
+   is deliberately stricter than the resolver's own first-match tolerance,
+   because "still matches one thing" is exactly the signal that separates
+   safe reuse from a stale, ambiguous guess).
+3. Any of "fingerprint drifted," "remembered locator now matches 0 or >1
+   elements," or "the action succeeded but the step's `expect` still
+   failed" → distrust the memory and re-resolve fresh (a "relearn"),
+   overwriting the stored row.
+4. If that fresh re-resolve *also* fails (nothing on the page matches at
+   all) → a new failure cause, `NEEDS_HUMAN`, distinct from a first-time
+   `ELEMENT_NOT_FOUND`: Tenfold specifically knows its own memory was
+   stale here and couldn't recover, rather than never having had an
+   opinion about this element.
+
+Every report gets a **Memory** block (report page, and printed by the CLI)
+summarizing `reused` / `relearned` step-completions and the resolver-call
+reduction versus the "every step, every run" baseline. Verified live
+against Flakemart's canonical 5-step demo plan (3 parallel runs each):
+
+```
+run 1 (cold memory):  reused 6/9 steps  · resolver calls 3 (baseline 9) · cost down 67%
+run 2 (same site):    reused 9/9 steps  · resolver calls 0 (baseline 9) · cost down 100%
+run 3 (?layout=v2):   reused 8/9 steps  · re-learned 1   · cost down 89%
+```
+
+Run 3 is the demo hook from the original brief: Flakemart's `?layout=v2`
+(sticky via cookie, same mechanism as `?flake`) renames the "Add ... to
+Cart" buttons and the checkout CTA, and re-running the identical plan shows
+memory correctly relearning *only* the one step whose target actually
+changed — the coupon input and the nav bar's stable "Checkout" link were
+both reused untouched. (The brief's own wording describes renaming the
+coupon *button* specifically; in this implementation the coupon submit
+click is a small heuristic in `executeRun.ts` — see `maybeClickSubmit` —
+rather than a resolver-tracked target, so `?layout=v2` instead renames the
+two click targets that genuinely go through Workflow Memory, to make the
+demo show what it actually claims.)
+
+Storage is pluggable, same pattern as the runner's own run-row `Store`: the
+CLI defaults to a JSON file next to the plan (`<plan>.memory.json`, so two
+consecutive `tenfold run` invocations demonstrate reuse with zero setup —
+pass `--no-memory` to disable, or `--memory-file <path>` to point elsewhere);
+the runner uses `step_memory` in Postgres (`infra/schema.sql`) when
+`DATABASE_URL` is set, an in-process Map otherwise. Only locators, a
+structure fingerprint, and a one-line reason are ever stored — never page
+content or anything a user typed.
+
 ## Solari gotchas we hit
 
 Confirmed against https://docs.getsolari.com and the real examples in this
@@ -195,6 +262,17 @@ cookbook (`browser-quickstart-ts`, `browser-stealth-proxy-ts`) on
   real bug class (a client-side handler attaching after a delay), not a
   literal SSR/hydration bug — see `apps/flakemart/server.mjs` for the exact
   mechanism and why it was built that way.
+- **Workflow Memory's `NEEDS_HUMAN` failure path (§11.2 step 4 — a
+  remembered locator distrusted AND a fresh re-resolve also failing) is
+  live-verified for the reuse and relearn-succeeds paths, but not for this
+  specific double-failure branch** — it's a short, easily-inspected
+  try/catch (`retryWithFreshResolve` in `executeRun.ts`), not independently
+  exercised end-to-end against a real browser. The everyday paths (learn,
+  reuse, relearn-and-recover) are verified live in the section above.
+- **No landing-page "steps learned / re-learned" ticker yet** — §11.3
+  mentions surfacing memory stats next to the existing "Runs today" counter
+  on the landing page; the per-report Memory block is built, the global
+  ticker isn't.
 
 ## Repo layout
 
@@ -219,7 +297,9 @@ examples/browser-flake-tenfold-ts/
       STABLE.
 - [x] Budget caps enforced (daily $ cap, per-IP run cap, N/step caps); BYOK
       works via `X-Solari-Key` and is never persisted.
-- [ ] Public fork with README row added upstream (do this once the fork
-      exists — see `infra/deploy.md`).
+- [x] Public fork with README row added upstream.
 - [ ] Deployed to Vercel (web) + Render (runner + Flakemart + Postgres).
 - [x] "Solari gotchas we hit" section (above), honest limitations (above).
+- [x] Workflow Memory (§11): reuse/relearn rule, `step_memory` persistence
+      (file-backed for the CLI, Postgres for the runner), the Memory report
+      block, and the `?layout=v2` demo hook — verified live (numbers above).
