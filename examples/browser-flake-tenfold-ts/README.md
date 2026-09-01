@@ -106,15 +106,22 @@ fixing an SDK signature mismatch, is a one-file change (`solari/live.ts`).
 
 ## Solari gotchas we hit
 
-Confirmed against https://docs.getsolari.com on 2026-09-01 before writing
-`solari/live.ts`:
+Confirmed against https://docs.getsolari.com and the real examples in this
+cookbook (`browser-quickstart-ts`, `browser-stealth-proxy-ts`) on
+2026-09-01, before and while writing `solari/live.ts`:
 
-1. **`await solari.close()` is mandatory.** The quickstart repo's own README
-   says it plainly: skip it and the loopback proxy Solari opens locally
-   keeps the Node process alive forever. `executeRun.ts` wraps every launch
-   in `try/finally` so `release()` — which calls `solari.close()` — runs on
-   every exit path: success, a failed step, a thrown error, or the hard
-   deadline firing mid-step.
+1. **Closing a session is actually TWO separate calls, to two different
+   objects.** `browser.close()` releases the Solari *session* (what shows
+   up as ended in the dashboard); `client.close()` separately shuts down
+   the local loopback proxy the SDK opened for that client. The quickstart
+   example calls both. Missing either one leaks something — skip
+   `browser.close()` and the session (and its billing clock) stays open
+   server-side; skip `client.close()` and the Node process never exits.
+   `SolariSession.release()` handles the first (called via `try/finally`
+   around every step in `executeRun.ts`, so it runs on every exit path);
+   `SolariClient.close()` is a new optional method on the client itself,
+   called once per Tenfold run — after every session it launched has
+   already been individually released — in `fanout/index.ts`.
 2. **Recording must be requested at launch, not after.** `recording: true`
    has to be part of the `client.launch()` call. We default it to `true`
    for every live session regardless of what the caller asked for — a
@@ -137,15 +144,23 @@ Confirmed against https://docs.getsolari.com on 2026-09-01 before writing
    `204`.** We never treat a `404` from cleanup as "already gone" without
    checking — see the fallback `releaseAndWait` attempt in `live.ts`'s
    `release()`.
-6. **Exact page-acquisition and session-id property names are marked
-   `[VERIFY]` in `solari/live.ts`.** The docs confirm `client.launch()`
-   returns something Playwright/CDP-shaped with a `.close()`, but not the
-   literal property name for the session id or the exact call to get a
-   `Page` from it. We read `.sessionId ?? .id` and call `.newPage()`,
-   matching the plain Playwright `Browser` interface the docs describe —
-   this is the one thing in the codebase that needs a real key to confirm
-   before a live deploy, and it's isolated to a single file by design.
-7. **The sandbox this was built in required routing headless Chromium
+6. **The session identifier is `browser.id`, not `browser.sessionId`.**
+   Confirmed by reading the real quickstart example rather than the docs
+   prose, which was ambiguous on this. We read `.id ?? .sessionId` (id
+   first) so a future SDK rename in the other direction wouldn't silently
+   break session tracking. Whether `client.sessions.getReplayUrl()` exists
+   at all is still `[VERIFY]` in `solari/live.ts` — only `downloadReplay`
+   appears in the one example we could read that touches replays, and
+   that's the one thing left in the codebase that needs a real Solari key
+   to confirm before a live deploy. It's isolated to a single file by
+   design.
+7. **`stealth` and `proxy`/`captcha` aren't independent options.**
+   `browser-stealth-proxy-ts` requests stealth explicitly alongside proxy
+   and captcha-solving, and the docs note plain proxy/captcha requests get
+   silently no-op'd without it. `live.ts` forces `stealth: true` whenever
+   either `proxy` or `captcha` is requested, regardless of what the caller
+   passed for `stealth` itself.
+8. **The sandbox this was built in required routing headless Chromium
    through an explicit outbound proxy** (`HTTPS_PROXY`) with `localhost`
    bypassed — Chromium doesn't inherit `HTTPS_PROXY` from the environment
    the way `curl` or Node's `fetch` do. Not a Solari-specific gotcha, but
@@ -156,10 +171,10 @@ Confirmed against https://docs.getsolari.com on 2026-09-01 before writing
 ## Honest limitations
 
 - **`solari/live.ts` is unverified against a real key.** Everything in it is
-  built directly from the documented SDK shape (confirmed via
-  `docs.getsolari.com` and the `solari-cookbook` quickstart repo), with the
-  two remaining ambiguities marked `[VERIFY]` in the file itself. If either
-  is wrong, it's a one-file fix.
+  built directly from the documented SDK shape and the real quickstart/
+  stealth-proxy examples in this cookbook, with the one remaining
+  ambiguity (`getReplayUrl()`'s existence) marked `[VERIFY]` in the file
+  itself. If it's wrong, it's a one-file fix.
 - **LLM backend is Groq, not Anthropic**, per this build's constraints —
   `packages/core/src/llm/groq.ts` is the only file that would need to
   change to swap providers again.
