@@ -1,0 +1,27 @@
+{
+  "name": "runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src --ext .ts",
+    "test": "echo 'no tests yet' && exit 0"
+  },
+  "dependencies": {
+    "@tenfold/core": "workspace:*",
+    "hono": "^4.6.9",
+    "@hono/node-server": "^1.13.7",
+    "zod": "^3.23.8",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "tsx": "^4.19.2",
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.11.10"
+  }
+}
