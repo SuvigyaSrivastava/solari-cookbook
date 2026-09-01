@@ -207,6 +207,26 @@ function ReportView({ run, report }: { run: RunRowClient; report: TenfoldReport 
         <strong className="num">{report.ownMisses}</strong>
       </div>
 
+      {report.memory && (
+        <>
+          <div className="section-title">Memory</div>
+          <div className="own-misses">
+            Reused <strong className="num">{report.memory.reused}</strong>/
+            {report.memory.reused + report.memory.resolverCallsMade} steps from memory
+            {report.memory.relearned > 0 && (
+              <>
+                {" "}
+                · re-learned <strong className="num">{report.memory.relearned}</strong>
+                {report.memory.relearned === 1 ? " step" : " steps"}
+              </>
+            )}
+            {" "}· resolver calls: <strong className="num">{report.memory.resolverCallsMade}</strong> (baseline{" "}
+            {report.memory.resolverCallsBaseline}) · resolver cost down{" "}
+            <strong className="num">{report.memory.costReductionPct}%</strong>
+          </div>
+        </>
+      )}
+
       <div className="section-title">Per-run results</div>
       <table className="runs-table">
         <thead>
