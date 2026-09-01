@@ -57,6 +57,21 @@ export async function resolveTarget(page: Page, step: Step): Promise<Locator> {
     }
   }
 
+  // An LLM-written target often describes an element in different word
+  // order than its actual accessible name ("Blue Hoodie add to cart button"
+  // vs. the real "Add Blue Hoodie to Cart") — a direct substring match in
+  // either direction fails even though a human would call it an obvious
+  // match. Before paying for an LLM resolver call, try a keyword-overlap
+  // scan: does every "significant" word in the target appear somewhere in
+  // this candidate's accessible name, in any order?
+  if (step.intent === "click" || step.intent === "type" || step.intent === "select") {
+    const role = step.intent === "click" ? (["button", "link"] as const) : (["textbox", "combobox"] as const);
+    for (const r of role) {
+      const loc = await keywordScan(page, r, needle);
+      if (loc) return loc;
+    }
+  }
+
   if (getGroqClient()) {
     const llmLocator = await resolveWithLlm(page, step);
     if (llmLocator) return llmLocator;
@@ -99,6 +114,40 @@ async function resolveWithLlm(page: Page, step: Step): Promise<Locator | null> {
   } catch {
     return null;
   }
+}
+
+const STOPWORDS = new Set([
+  "a", "an", "the", "to", "for", "on", "in", "of", "and", "or", "button",
+  "field", "input", "box", "click", "add", "go", "open", "page", "type",
+  "enter", "select", "with", "this", "that",
+]);
+
+function significantWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !STOPWORDS.has(w));
+}
+
+/**
+ * Scans every element with the given ARIA role for one whose accessible
+ * name contains all of the target's significant words, regardless of order
+ * — a cheap, deterministic middle ground between a strict substring match
+ * and a full LLM resolver call. Bounded to the first 30 matches on the page
+ * so a pathological page can't make this scan expensive.
+ */
+async function keywordScan(page: Page, role: string, needle: string): Promise<Locator | null> {
+  const words = significantWords(needle);
+  if (words.length === 0) return null;
+  const locator = page.getByRole(role as Parameters<Page["getByRole"]>[0]);
+  const count = Math.min(await locator.count().catch(() => 0), 30);
+  for (let i = 0; i < count; i++) {
+    const el = locator.nth(i);
+    const name = (await el.innerText().catch(() => "")).toLowerCase();
+    if (words.every((w) => name.includes(w))) return el;
+  }
+  return null;
 }
 
 function firstQuoted(text: string): string | undefined {
