@@ -14,3 +14,7 @@ export {
   SOLARI_CAPTCHA_USD_PER_SOLVE,
 } from "./solari/index.js";
 export type { SolariClient, SolariSession } from "./solari/types.js";
+export { InMemoryStepMemoryStore, FileStepMemoryStore } from "./memory/store.js";
+export { hostOf, stepTextHash } from "./memory/applyMemory.js";
+export type { MemoryContext } from "./memory/applyMemory.js";
+export type { StepMemoryStore, StepMemoryEntry, LocatorSpec } from "./memory/types.js";

@@ -62,6 +62,7 @@ export const Cause = z.enum([
   "CAPTCHA_BLOCKED",
   "RESOLVER_ERROR", // Tenfold's own miss
   "INFRA_ERROR", // Tenfold's own miss
+  "NEEDS_HUMAN", // Workflow Memory (§11.2 step 4): reuse AND a fresh re-learn both failed
 ]);
 export type Cause = z.infer<typeof Cause>;
 
@@ -76,6 +77,18 @@ export const OWN_MISS_CAUSES: readonly Cause[] = [
 
 export type StepStatus = "passed" | "failed" | "skipped";
 
+/**
+ * Workflow Memory (§11) provenance for one step's target resolution:
+ * "reused" skipped the resolver entirely using a remembered locator;
+ * "learned" is the first time this (site, step) has ever been seen, so it
+ * paid for a fresh resolve and will write a brand-new memory row;
+ * "relearned" HAD a memory row but distrusted it (fingerprint drift, or the
+ * remembered locator no longer matches exactly one element) and paid for a
+ * fresh resolve to overwrite it; "resolved" means no memory store was wired
+ * in for this run at all (memory disabled) — not counted in report stats.
+ */
+export type MemorySource = "reused" | "learned" | "relearned" | "resolved";
+
 export interface StepResult {
   index: number;
   text: string;
@@ -84,6 +97,9 @@ export interface StepResult {
   cause?: Cause;
   reason?: string;
   screenshotPath?: string;
+  /** Workflow Memory (§11): how this step's target was resolved, if it had one. */
+  memory?: MemorySource;
+  relearnReason?: string;
 }
 
 export type RunStatus = "passed" | "failed" | "error";
@@ -135,6 +151,19 @@ export interface TenfoldReport {
   createdAt: string;
   replaysExpireAt: string;
   mode: "live" | "mock";
+  /**
+   * Workflow Memory (§11.3): "Reused 4/5 steps from memory · re-learned
+   * step 3 · LLM calls: 2 (was 10 on first run) · resolver cost ↓ 80%".
+   * Omitted entirely when no memory store was wired in for this run (e.g.
+   * navigate/wait/assert-only plans, or memory explicitly disabled).
+   */
+  memory?: {
+    reused: number;
+    relearned: number;
+    resolverCallsMade: number;
+    resolverCallsBaseline: number; // what it would have been with memory off
+    costReductionPct: number; // 0..100, relative to resolverCallsBaseline
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +191,14 @@ export type TenfoldEvent =
       runId: string;
       runIndex: number;
       replayUrl: string;
+      at: string;
+    }
+  | {
+      type: "step.relearned";
+      runId: string;
+      runIndex: number;
+      stepIndex: number;
+      reason: string;
       at: string;
     }
   | { type: "report.ready"; runId: string; report: TenfoldReport; at: string };
