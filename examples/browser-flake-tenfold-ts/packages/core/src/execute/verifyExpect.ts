@@ -90,7 +90,7 @@ export async function verifyExpect(page: Page, expect: string): Promise<VerifyRe
 }
 
 async function verifyWithLlm(bodyText: string, expect: string): Promise<VerifyResult | null> {
-  const model = process.env.RESOLVE_MODEL ?? "llama-3.1-8b-instant";
+  const model = process.env.RESOLVE_MODEL ?? "openai/gpt-oss-20b";
   try {
     const raw = await chatText({
       model,

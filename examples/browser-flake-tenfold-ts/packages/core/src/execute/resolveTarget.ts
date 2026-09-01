@@ -75,7 +75,7 @@ async function resolveWithLlm(page: Page, step: Step): Promise<Locator | null> {
     snapshot = await page.title().catch(() => "");
   }
 
-  const model = process.env.RESOLVE_MODEL ?? "llama-3.1-8b-instant";
+  const model = process.env.RESOLVE_MODEL ?? "openai/gpt-oss-20b";
   try {
     const raw = await chatJson({
       model,

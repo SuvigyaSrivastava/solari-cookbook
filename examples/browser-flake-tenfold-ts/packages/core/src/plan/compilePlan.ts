@@ -39,7 +39,7 @@ export async function compilePlan(
   if (lines.length > 12) throw new Error("compilePlan: at most 12 steps are allowed");
 
   const compiledSteps = getGroqClient()
-    ? await compileWithLlm(lines, opts.model ?? process.env.PLAN_MODEL ?? "llama-3.3-70b-versatile")
+    ? await compileWithLlm(lines, opts.model ?? process.env.PLAN_MODEL ?? "openai/gpt-oss-120b")
     : localCompile(lines, targetUrl);
 
   const steps = compiledSteps.map((s, index) => ({ ...s, index }));
