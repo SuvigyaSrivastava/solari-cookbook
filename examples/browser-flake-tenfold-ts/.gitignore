@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.next/
+.env
+.env.local
+*.log
+.turbo/
+infra/tenfold.db
+infra/tenfold.db-journal
+.DS_Store
