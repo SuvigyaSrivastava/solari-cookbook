@@ -1,0 +1,179 @@
+import { z } from "zod";
+
+// ---------------------------------------------------------------------------
+// Step / TestPlan
+// ---------------------------------------------------------------------------
+
+export const StepIntent = z.enum([
+  "navigate",
+  "click",
+  "type",
+  "select",
+  "wait",
+  "assert",
+]);
+export type StepIntent = z.infer<typeof StepIntent>;
+
+export const StepSchema = z.object({
+  index: z.number().int().min(0),
+  text: z.string().min(1), // original English line, always preserved
+  intent: StepIntent,
+  target: z.string().optional(), // natural-language description of the element
+  value: z.string().optional(), // text to type / option to choose / URL
+  expect: z.string().min(1), // natural-language success condition
+});
+export type Step = z.infer<typeof StepSchema>;
+
+export const TestPlanOptionsSchema = z.object({
+  stealth: z.boolean().default(true),
+  captcha: z.boolean().default(false),
+  proxy: z.enum(["us"]).optional(),
+  profileId: z.string().optional(), // P1 — reuse logged-in session across runs
+});
+export type TestPlanOptions = z.infer<typeof TestPlanOptionsSchema>;
+
+export const TestPlanSchema = z.object({
+  targetUrl: z.string().url(),
+  steps: z.array(StepSchema).min(1).max(12),
+  runs: z.number().int().min(1).max(15).default(10),
+  hardDeadlineMs: z.number().int().positive().default(120_000),
+  options: TestPlanOptionsSchema.default({ stealth: true, captcha: false }),
+});
+export type TestPlan = z.infer<typeof TestPlanSchema>;
+
+// The shape the LLM is asked to return — same as Step but without `index`,
+// which we assign deterministically from array position after validation.
+export const CompiledStepSchema = StepSchema.omit({ index: true });
+export type CompiledStep = z.infer<typeof CompiledStepSchema>;
+
+export const CompiledPlanSchema = z.object({
+  steps: z.array(CompiledStepSchema).min(1).max(12),
+});
+
+// ---------------------------------------------------------------------------
+// Failure taxonomy
+// ---------------------------------------------------------------------------
+
+export const Cause = z.enum([
+  "TIMEOUT",
+  "ELEMENT_NOT_FOUND",
+  "ASSERTION_FAILED",
+  "NAVIGATION_ERROR",
+  "CAPTCHA_BLOCKED",
+  "RESOLVER_ERROR", // Tenfold's own miss
+  "INFRA_ERROR", // Tenfold's own miss
+]);
+export type Cause = z.infer<typeof Cause>;
+
+export const OWN_MISS_CAUSES: readonly Cause[] = [
+  "RESOLVER_ERROR",
+  "INFRA_ERROR",
+];
+
+// ---------------------------------------------------------------------------
+// Execution results
+// ---------------------------------------------------------------------------
+
+export type StepStatus = "passed" | "failed" | "skipped";
+
+export interface StepResult {
+  index: number;
+  text: string;
+  status: StepStatus;
+  durationMs: number;
+  cause?: Cause;
+  reason?: string;
+  screenshotPath?: string;
+}
+
+export type RunStatus = "passed" | "failed" | "error";
+export type ReplayStatus = "disabled" | "pending" | "ready" | "failed" | "expired";
+
+export interface RunResult {
+  runIndex: number;
+  status: RunStatus;
+  steps: StepResult[];
+  firstFailureStep: number | null;
+  cause: Cause | null;
+  sessionId: string | null;
+  replayUrl: string | null;
+  replayStatus: ReplayStatus;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  browserHours: number;
+  captchaSolves: number;
+}
+
+// ---------------------------------------------------------------------------
+// Report
+// ---------------------------------------------------------------------------
+
+export type Verdict = "STABLE" | "FLAKY" | "BROKEN";
+
+export interface TenfoldReport {
+  runId: string;
+  plan: TestPlan;
+  passed: number;
+  failed: number;
+  runs: number;
+  passRate: number; // 0..1
+  verdict: Verdict;
+  firstFailureHistogram: Record<number, number>; // step index -> count
+  causeBreakdown: Record<Cause, number>;
+  ownMisses: number;
+  perRun: RunResult[];
+  cost: {
+    browserHours: number;
+    usd: number;
+    captchaSolves: number;
+  };
+  timing: {
+    p50Ms: number;
+    p95Ms: number;
+  };
+  createdAt: string;
+  replaysExpireAt: string;
+  mode: "live" | "mock";
+}
+
+// ---------------------------------------------------------------------------
+// Progress events (SSE)
+// ---------------------------------------------------------------------------
+
+export type TenfoldEvent =
+  | { type: "run.started"; runId: string; runIndex: number; at: string }
+  | {
+      type: "step.completed";
+      runId: string;
+      runIndex: number;
+      step: StepResult;
+      at: string;
+    }
+  | {
+      type: "run.finished";
+      runId: string;
+      runIndex: number;
+      result: RunResult;
+      at: string;
+    }
+  | {
+      type: "replay.ready";
+      runId: string;
+      runIndex: number;
+      replayUrl: string;
+      at: string;
+    }
+  | { type: "report.ready"; runId: string; report: TenfoldReport; at: string };
+
+// ---------------------------------------------------------------------------
+// Solari launch options (thin, only what we use)
+// ---------------------------------------------------------------------------
+
+export interface SolariLaunchOptions {
+  stealth?: boolean;
+  recording?: boolean;
+  proxy?: "us";
+  captcha?: boolean;
+  profileId?: string;
+}
