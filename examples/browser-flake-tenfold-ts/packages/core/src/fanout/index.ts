@@ -47,6 +47,13 @@ export async function runTenfold(plan: TestPlan, opts: RunTenfoldOptions, client
   );
 
   const settled = await Promise.allSettled(launches);
+
+  // Every session this client launched has now been individually released
+  // (executeRun's own try/finally guarantees that). Close the *client*
+  // itself exactly once, here — see solari/live.ts for why this is a
+  // separate call from any one session's close().
+  await client.close?.().catch(() => undefined);
+
   const perRun: RunResult[] = settled.map((s, runIndex) =>
     s.status === "fulfilled"
       ? s.value

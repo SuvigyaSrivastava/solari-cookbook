@@ -31,4 +31,11 @@ export interface SolariSession {
 export interface SolariClient {
   launch(opts: SolariLaunchOptions): Promise<SolariSession>;
   readonly mode: "live" | "mock";
+  /**
+   * Closes the underlying Solari client itself (separate from any one
+   * session's `release()` — see live.ts for why both exist). Call once,
+   * after every session this client launched has already been released.
+   * Optional because mock mode has nothing at the client level to close.
+   */
+  close?(): Promise<void>;
 }
