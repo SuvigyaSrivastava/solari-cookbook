@@ -77,7 +77,7 @@ export async function executeRun(
       const t0 = Date.now();
       try {
         await withTimeout(runStep(session.page, step, plan), remaining);
-        const verify = await withTimeout(verifyExpect(session.page, step.expect), remaining);
+        const verify = await withTimeout(verifyExpect(session.page, step.expect, step.intent), remaining);
         const durationMs = Date.now() - t0;
 
         if (!verify.passed) {
