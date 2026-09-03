@@ -126,6 +126,11 @@ export default function LandingPage() {
           about $0.001–0.01.
         </div>
         <div>
+          <strong>It remembers your site.</strong> Workflow Memory reuses locators it already
+          resolved instead of re-asking an LLM every run — up to 70% cheaper on a warm run, and
+          it re-learns automatically the moment the page actually changes.
+        </div>
+        <div>
           <strong>Built on Solari:</strong> stealth cloud Chrome, per-session recording, one API
           key.
         </div>

@@ -511,6 +511,61 @@ footer.tenfold-footer {
   margin: 16px 0;
 }
 
+/* Workflow Memory's own stat card on the report page — this is one of the
+   project's strongest numbers (real cost reduction from reusing resolved
+   locators instead of re-asking the LLM resolver) and previously read as a
+   single dense sentence, easy to skim past. Gets the same "big number,
+   small label" treatment as the CTA band and the verdict headline. */
+.memory-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  align-items: center;
+}
+.memory-hero {
+  flex: 1 1 220px;
+  min-width: 200px;
+}
+.memory-hero-num {
+  font-family: var(--display);
+  font-size: 48px;
+  font-weight: 800;
+  color: var(--accent);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.memory-hero-label {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-top: 8px;
+  max-width: 220px;
+  line-height: 1.4;
+}
+.memory-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  flex: 2 1 320px;
+}
+.memory-stat {
+  flex: 1 1 140px;
+}
+.memory-stat .num {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.memory-stat-label {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+
 /* Cardinal-style CTA band: full-bleed rounded panel, brand accent, doodled
    squiggles, used for the trust/footer strip on the landing page. */
 .cta-band {

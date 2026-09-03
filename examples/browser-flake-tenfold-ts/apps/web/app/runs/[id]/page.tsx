@@ -209,20 +209,35 @@ function ReportView({ run, report }: { run: RunRowClient; report: TenfoldReport 
 
       {report.memory && (
         <>
-          <div className="section-title">Memory</div>
-          <div className="own-misses">
-            Reused <strong className="num">{report.memory.reused}</strong>/
-            {report.memory.reused + report.memory.resolverCallsMade} steps from memory
-            {report.memory.relearned > 0 && (
-              <>
-                {" "}
-                · re-learned <strong className="num">{report.memory.relearned}</strong>
-                {report.memory.relearned === 1 ? " step" : " steps"}
-              </>
-            )}
-            {" "}· resolver calls: <strong className="num">{report.memory.resolverCallsMade}</strong> (baseline{" "}
-            {report.memory.resolverCallsBaseline}) · resolver cost down{" "}
-            <strong className="num">{report.memory.costReductionPct}%</strong>
+          <div className="section-title">Workflow memory</div>
+          <div className="memory-card">
+            <div className="memory-hero">
+              <div className="memory-hero-num">{report.memory.costReductionPct}%</div>
+              <div className="memory-hero-label">
+                cheaper this run — reused instead of re-asking the resolver
+              </div>
+            </div>
+            <div className="memory-stats">
+              <div className="memory-stat">
+                <div className="num">
+                  {report.memory.reused}/{report.memory.reused + report.memory.resolverCallsMade}
+                </div>
+                <div className="memory-stat-label">steps reused from memory</div>
+              </div>
+              <div className="memory-stat">
+                <div className="num">{report.memory.resolverCallsMade}</div>
+                <div className="memory-stat-label">
+                  resolver calls made (baseline {report.memory.resolverCallsBaseline})
+                </div>
+              </div>
+              <div className="memory-stat">
+                <div className="num">{report.memory.relearned}</div>
+                <div className="memory-stat-label">
+                  {report.memory.relearned === 1 ? "step" : "steps"} re-learned (page drift
+                  detected)
+                </div>
+              </div>
+            </div>
           </div>
         </>
       )}
