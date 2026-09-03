@@ -63,11 +63,32 @@ export default function LandingPage() {
 
   return (
     <main className="container">
-      <h1 className="hero-headline">Your test passed. Run it ten times.</h1>
+      <div className="hero-wrap">
+        <span className="eyebrow">Built on Solari</span>
+        <h1 className="hero-headline">
+          Your test passed.
+          <br />
+          Run it ten times.
+          <svg className="scribble" viewBox="0 0 300 20" fill="none" aria-hidden="true">
+            <path
+              d="M2 12C60 4 140 4 200 10C230 13 260 9 298 6"
+              stroke="var(--accent)"
+              strokeWidth="5"
+              strokeLinecap="round"
+            />
+          </svg>
+        </h1>
+      </div>
       <p className="hero-sub">
         Tenfold runs your plain-English test plan 10× in parallel in real cloud Chrome and
         reports the <em>flake rate</em> — with a session replay attached to every failure.
       </p>
+
+      <div className="sticky-row">
+        <span className="sticky yellow">10× parallel runs</span>
+        <span className="sticky blue">real cloud Chrome</span>
+        <span className="sticky orange">replay every failure</span>
+      </div>
 
       <table className="diff-table">
         <thead>
@@ -207,6 +228,33 @@ export default function LandingPage() {
           </div>
         )}
       </form>
+
+      <div className="cta-band">
+        <svg
+          viewBox="0 0 900 200"
+          preserveAspectRatio="none"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.22 }}
+          aria-hidden="true"
+        >
+          <path
+            d="M -20 40 Q 60 -10 140 40 T 320 30"
+            stroke="#fff8ec"
+            strokeWidth="3"
+            fill="none"
+          />
+          <path
+            d="M 920 160 Q 840 190 760 150 T 580 170"
+            stroke="#fff8ec"
+            strokeWidth="3"
+            fill="none"
+          />
+        </svg>
+        <h2>Stop shipping tests that lie.</h2>
+        <p>Ten runs tell you what one run can&apos;t.</p>
+        <a className="btn-cream" href="#targetUrl">
+          Try it above ↑
+        </a>
+      </div>
 
       <footer className="tenfold-footer">
         Tenfold is a submission to the Pinetree Research / Solari hiring challenge — a fork of{" "}
