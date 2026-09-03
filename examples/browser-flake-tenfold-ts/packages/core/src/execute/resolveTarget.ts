@@ -135,32 +135,44 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
       // fixture, where the real placeholder is "Search or jump to...",
       // nothing like the generic target text. A keyword-overlap scan is
       // already the established middle ground for this exact mismatch (see
-      // above), so try it against the freshly-revealed DOM too.
-      const kwFound = await keywordScan(page, "textbox", needle);
-      if (kwFound) return { locator: kwFound.locator, spec: { kind: "role", role: "textbox", name: kwFound.name } };
+      // above), so try it against the freshly-revealed DOM too. Scan BOTH
+      // "textbox" and "combobox": confirmed live against github.com's real
+      // revealed search field — it's a plain <input type="text"> but with
+      // an EXPLICIT role="combobox" (aria-haspopup="listbox",
+      // aria-autocomplete="list", for the type-ahead suggestion dropdown),
+      // so Playwright's accessibility tree reports it as combobox, not
+      // textbox. A scan that only checks "textbox" misses it entirely and
+      // falls through to a genuinely wrong element (the earlier live test
+      // resolved to something non-fillable and threw RESOLVER_ERROR).
+      for (const role of ["textbox", "combobox"] as const) {
+        const kwFound = await keywordScan(page, role, needle);
+        if (kwFound) return { locator: kwFound.locator, spec: { kind: "role", role, name: kwFound.name } };
+      }
 
       // Last resort for this reveal path specifically: a search overlay
       // that was just opened by a click we ourselves triggered is
-      // overwhelmingly likely to contain exactly one purpose-built textbox
-      // (a command palette, a search modal) — if there's exactly one
-      // visible textbox anywhere on the page now, it's almost certainly
-      // the one we just revealed, even if neither its name nor placeholder
-      // textually resembles the plan's target phrase at all. The spec we
-      // persist to Workflow Memory here deliberately does NOT reuse the
-      // mismatched `needle` as a role name (that spec would never re-match
-      // on a future run) — instead it records the element's OWN accessible
-      // name/placeholder, whatever that actually is, so a later run's
-      // memory-reuse attempt targets the real thing rather than a phrase
-      // known not to match it.
-      const anyTextbox = page.getByRole("textbox");
-      const visibleCount = await anyTextbox.count().catch(() => 0);
-      if (visibleCount === 1) {
-        const loc = anyTextbox.first();
-        const ownName =
-          (await loc.getAttribute("aria-label").catch(() => null)) ??
-          (await loc.getAttribute("placeholder").catch(() => null)) ??
-          needle;
-        return { locator: loc, spec: { kind: "role", role: "textbox", name: ownName } };
+      // overwhelmingly likely to contain exactly one purpose-built
+      // textbox/combobox (a command palette, a search modal) — if there's
+      // exactly one visible fillable field anywhere on the page now, it's
+      // almost certainly the one we just revealed, even if neither its
+      // name nor placeholder textually resembles the plan's target phrase
+      // at all. The spec we persist to Workflow Memory here deliberately
+      // does NOT reuse the mismatched `needle` as a role name (that spec
+      // would never re-match on a future run) — instead it records the
+      // element's OWN accessible name/placeholder, whatever that actually
+      // is, so a later run's memory-reuse attempt targets the real thing
+      // rather than a phrase known not to match it.
+      for (const role of ["textbox", "combobox"] as const) {
+        const anyMatch = page.getByRole(role);
+        const visibleCount = await anyMatch.count().catch(() => 0);
+        if (visibleCount === 1) {
+          const loc = anyMatch.first();
+          const ownName =
+            (await loc.getAttribute("aria-label").catch(() => null)) ??
+            (await loc.getAttribute("placeholder").catch(() => null)) ??
+            needle;
+          return { locator: loc, spec: { kind: "role", role, name: ownName } };
+        }
       }
     }
   }
