@@ -42,7 +42,14 @@ export type TestPlanOptions = z.infer<typeof TestPlanOptionsSchema>;
 
 export const TestPlanSchema = z.object({
   targetUrl: z.string().url(),
-  steps: z.array(StepSchema).min(1).max(12),
+  // 13, not 12: the user's own plan is still capped at 12 lines (enforced at
+  // the API boundary in server.ts and by compilePlan's own line-count check)
+  // — this schema validates the FINAL compiled plan, which can carry one
+  // extra implicit navigate step that compilePlan prepends when none of the
+  // user's 12 lines already opens with one (confirmed live: a plan with no
+  // "go to X" line compiled to zero navigate steps, leaving the browser on
+  // about:blank for the whole run). +1 accommodates exactly that one step.
+  steps: z.array(StepSchema).min(1).max(13),
   runs: z.number().int().min(1).max(15).default(10),
   hardDeadlineMs: z.number().int().positive().default(120_000),
   options: TestPlanOptionsSchema.default({ stealth: true, captcha: false }),

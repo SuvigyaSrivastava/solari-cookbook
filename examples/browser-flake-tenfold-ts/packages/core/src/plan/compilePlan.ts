@@ -97,7 +97,38 @@ export async function compilePlan(
     return hasExplicitUrl ? s : { ...s, value: targetUrl };
   });
 
-  const steps = withRealTargetUrl.map((s, index) => ({ ...s, index }));
+  // A real, confirmed-live bug (not a hypothetical): a plan whose lines are
+  // ALL click/type/select/assert — no line reads like "go to X" or "open the
+  // homepage" — compiles with ZERO navigate steps, because both compilers
+  // only ever emit "navigate" when a LINE actually asks for it (see
+  // localCompile's own `i === 0 && /^(open|navigate to|go to|visit)/` guard,
+  // and the LLM system prompt's identical convention). The executor has no
+  // separate "make sure we're on targetUrl" step of its own outside that —
+  // ensureImpliedNavigation in executeRun.ts only covers the narrow
+  // "go to the cart/checkout/home" compound-sentence case — so the browser
+  // was confirmed live to sit at about:blank for the entire run, failing
+  // step 0 with ELEMENT_NOT_FOUND on whatever the first click/type target
+  // was. This is exactly what a user would write if they assume (reasonably)
+  // that supplying the target URL separately in the form is enough to start
+  // there — "Click the search button" / "Type X into the search input" /
+  // "Press Enter" was the real plan that triggered this. Prepend an implicit
+  // navigate step whenever the compiled plan doesn't already open with one,
+  // rather than trusting every compiler path to always think to add it.
+  const hasLeadingNavigate = withRealTargetUrl[0]?.intent === "navigate";
+  const withGuaranteedNavigation: CompiledStep[] = hasLeadingNavigate
+    ? withRealTargetUrl
+    : [
+        {
+          text: `(implicit) Go to ${targetUrl}`,
+          intent: "navigate",
+          value: targetUrl,
+          target: "the page",
+          expect: `the page at ${targetUrl} loads successfully`,
+        },
+        ...withRealTargetUrl,
+      ];
+
+  const steps = withGuaranteedNavigation.map((s, index) => ({ ...s, index }));
 
   return TestPlanSchema.parse({
     targetUrl,
