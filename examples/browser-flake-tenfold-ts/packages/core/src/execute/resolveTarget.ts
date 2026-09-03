@@ -177,8 +177,19 @@ async function resolveWithLlm(page: Page, step: Step): Promise<ResolvedTarget | 
 
     const loc = locatorForSpec(page, spec);
     if ((await loc.first().count()) > 0) return { locator: loc.first(), spec };
+    // The LLM answered, but its answer doesn't resolve to anything on the
+    // real page — worth knowing about when this is the reason a step
+    // reports ELEMENT_NOT_FOUND instead of assuming Groq was never reached.
+    console.error(`[tenfold-core] LLM resolver returned a spec that matched 0 elements for target "${step.target}":`, spec);
     return null;
-  } catch {
+  } catch (err) {
+    // Swallowed by design (falls through to ElementNotFoundError, which is
+    // the correct user-facing failure either way) but silent otherwise —
+    // an auth/network/parse failure here looked identical to "the deterministic
+    // heuristics just couldn't find it" until this was added, which made a
+    // real live-mode ELEMENT_NOT_FOUND much harder to diagnose than it
+    // needed to be.
+    console.error(`[tenfold-core] LLM resolver call failed for target "${step.target}":`, err);
     return null;
   }
 }

@@ -43,6 +43,15 @@ if (!process.env.DATABASE_URL) {
 const app = createServer(store, stepMemoryStore);
 const port = Number(process.env.RUNNER_PORT ?? 8787);
 
+// Visibility for exactly the ambiguity that made a real live-mode
+// ELEMENT_NOT_FOUND hard to diagnose: without this, "the LLM resolver
+// wasn't reached" and "the LLM resolver was reached and still couldn't
+// find the element" printed identically (nothing) in the runner's own
+// terminal. The CLI already prints an equivalent line; the runner never did.
+console.log(
+  `[tenfold-runner] LLM backend: ${process.env.GROQ_API_KEY ? "Groq (live)" : "local heuristic compiler (GROQ_API_KEY not set)"}`,
+);
+
 serve({ fetch: app.fetch, port }, (info) => {
   console.log(`[tenfold-runner] listening on http://localhost:${info.port}`);
 });
