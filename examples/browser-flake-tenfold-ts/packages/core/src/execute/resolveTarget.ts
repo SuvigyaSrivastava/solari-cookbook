@@ -63,6 +63,11 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
   const quoted = firstQuoted(target) ?? firstQuoted(step.value ?? "");
   const needle = quoted ?? target;
 
+  // Role/placeholder/label-based candidates: each one names a SPECIFIC,
+  // semantically meaningful attribute (an accessible role+name, a
+  // placeholder, a <label> association), so a match here is a genuinely
+  // strong signal — worth trying first, and worth re-trying after the
+  // reveal-path click below.
   const candidates: Array<{ make: () => Locator; spec: LocatorSpec }> = [];
 
   if (step.intent === "click") {
@@ -99,12 +104,34 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
       spec: { kind: "role", role: "combobox", name: needle },
     });
   }
-  // Generic fallbacks that apply regardless of intent.
-  candidates.push({ make: () => page.getByText(needle, { exact: false }), spec: { kind: "text", text: needle } });
+
+  // Generic, LOOSE fallbacks — a plain text match or a `data-testid`
+  // substring say nothing about whether the element is even interactive,
+  // let alone the right one. Confirmed live to be a real, active hazard, not
+  // a theoretical one: github.com's real search dialog ships a purely
+  // decorative `<div aria-hidden="true" data-testid="quick-search-input-overlay">`
+  // sitting over the real input for visual/animation purposes — slugify("search
+  // input") produces "search-input", which is a substring of
+  // "quick-search-input-overlay", so `[data-testid*="search-input"]` matched
+  // this inert div instead of the real, fillable input a few lines away, and
+  // did so on EVERY run because it used to be checked before the role-based
+  // keyword scan and reveal logic ever got a chance. These are now tried
+  // only as a last resort, after every stronger signal (role-based
+  // candidates, keyword-overlap scan, the search-reveal path) has already
+  // come up empty — matching the LLM resolver's own "cheapest/most-specific
+  // signal first" ordering, just one tier up.
+  const genericFallbackCandidates: Array<{ make: () => Locator; spec: LocatorSpec }> = [];
+  genericFallbackCandidates.push({
+    make: () => page.getByText(needle, { exact: false }),
+    spec: { kind: "text", text: needle },
+  });
   const testidCss = `[data-testid="${slugify(needle)}"]`;
   const testidCssContains = `[data-testid*="${slugify(needle)}"]`;
-  candidates.push({ make: () => page.locator(testidCss), spec: { kind: "css", css: testidCss } });
-  candidates.push({ make: () => page.locator(testidCssContains), spec: { kind: "css", css: testidCssContains } });
+  genericFallbackCandidates.push({ make: () => page.locator(testidCss), spec: { kind: "css", css: testidCss } });
+  genericFallbackCandidates.push({
+    make: () => page.locator(testidCssContains),
+    spec: { kind: "css", css: testidCssContains },
+  });
 
   for (const { make, spec } of candidates) {
     try {
@@ -197,6 +224,23 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
           return { locator: loc, spec: { kind: "role", role, name: ownName } };
         }
       }
+    }
+  }
+
+  // Only now — after every role-based signal (candidates, keyword-overlap
+  // scan, the search-reveal path) has come up empty — fall back to the
+  // loose text/testid-substring candidates. See their definition above for
+  // why they're gated this late: a decorative, non-interactive element
+  // (github.com's real `data-testid="quick-search-input-overlay"` div,
+  // confirmed live) can satisfy a substring match purely by coincidence,
+  // and used to win outright before a much better role-based match ever got
+  // a chance.
+  for (const { make, spec } of genericFallbackCandidates) {
+    try {
+      const loc = make().first();
+      if ((await loc.count()) > 0) return { locator: loc, spec };
+    } catch {
+      // invalid selector shape for this candidate type — try the next one
     }
   }
 
