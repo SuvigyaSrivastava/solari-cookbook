@@ -87,6 +87,22 @@ export async function executeRun(
       ...(plan.options.profileId ? { profileId: plan.options.profileId } : {}),
     });
     sessionId = session.sessionId;
+    if (session.degraded) {
+      // live.ts fell back to a plain (non-stealth, non-proxied) session
+      // because the account's plan didn't support what was requested —
+      // most commonly a free-tier key plus shouldDefaultProxy() having
+      // requested `proxy: "us"` against a real external target. The run
+      // still proceeds, but a bot-protected target may now 403/timeout for
+      // a plan reason rather than a Tenfold bug — worth a loud note in the
+      // runner terminal since it won't otherwise be obvious from a single
+      // run's failure cause.
+      console.warn(
+        `[tenfold-core] run ${runIndex}: Solari session launched in a degraded ` +
+          "configuration (stealth/proxy disabled) — the account's plan didn't " +
+          "support the requested options. If this run fails with a 403 or " +
+          "timeout against a bot-protected site, that's likely why.",
+      );
+    }
 
     for (const step of plan.steps) {
       if (Date.now() > deadline) {

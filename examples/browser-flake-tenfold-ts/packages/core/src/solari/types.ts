@@ -16,6 +16,17 @@ export interface SolariSession {
   /** Whether recording was requested for this session. */
   recordingEnabled: boolean;
   /**
+   * True when this session had to fall back to a lesser configuration than
+   * requested because the account's plan didn't support it (e.g. a
+   * free-tier key hitting `402 FeatureRequiresPlan` for `stealth`, and — if
+   * `proxy`/`captcha` had forced stealth on — losing those too, since
+   * neither is usable without it on Solari). Always `false` in mock mode.
+   * Surfaced so a run against a real bot-protected site with a degraded
+   * session can explain a resulting 403/timeout as a plan limitation
+   * instead of looking like a fresh Tenfold bug.
+   */
+  degraded?: boolean;
+  /**
    * Mandatory cleanup. MUST be called exactly once, from a `finally` block,
    * on every code path (success, step failure, thrown error, hard-deadline
    * timeout). In live mode this is what prevents the loopback proxy from

@@ -113,6 +113,7 @@ export function createLiveSolariClient(apiKey: string): SolariClient {
       };
 
       let browser: any;
+      let degraded = false;
       try {
         browser = await client.launch(launchOpts);
       } catch (err) {
@@ -120,15 +121,40 @@ export function createLiveSolariClient(apiKey: string): SolariClient {
         // (confirmed live against a real free-plan key) — Tenfold defaults
         // stealth on because that's the right choice for a real target, but
         // a plan limit isn't the target site's fault, and it isn't worth
-        // failing 10/10 runs over when a plain (non-stealth) session would
-        // work fine against Flakemart or any other non-adversarial demo
-        // target. Degrade once, quietly, rather than hard-failing — proxy
-        // and captcha both require stealth, so this fallback only applies
-        // when neither was actually requested.
+        // failing 10/10 runs over when a degraded session would still work.
+        //
+        // Two distinct cases reach here, and they need two different
+        // fallbacks:
+        //
+        //   1. Caller only asked for stealth (no proxy/captcha) — drop
+        //      stealth and retry plain, exactly as before.
+        //   2. Caller ended up here because `shouldDefaultProxy()` silently
+        //      requested `proxy: "us"`, which forces stealth on (Solari
+        //      requires the pairing) — dropping stealth alone would just
+        //      trade this 402 for a different rejection (proxy without
+        //      stealth isn't a supported combination either). Confirmed
+        //      live: a free-tier key defaulted onto every external target
+        //      (github.com included) was hard-failing 10/10 runs here,
+        //      which is exactly the audience the proxy-default was meant to
+        //      help, not block. Drop BOTH stealth and proxy and retry
+        //      plain — worse than proxied+stealth against a real bot wall,
+        //      but far better than never running at all. `degraded` below
+        //      flows into the run's cause/reason so this is visible in the
+        //      report, not a silent downgrade.
         const code = (err as { code?: string })?.code;
-        if (code === "FeatureRequiresPlan" && stealth && !wantsProxyOrCaptcha) {
+        if (code === "FeatureRequiresPlan" && stealth) {
+          // Never spread `proxy`/`captcha` in as explicit `undefined` here —
+          // some HTTP clients serialize an own key with an `undefined` value
+          // differently than an absent key, and this retry's whole point is
+          // to send a request Solari will actually accept. Build the plain
+          // retry body from scratch instead of trying to "subtract" keys
+          // from launchOpts.
+          const retryOpts = wantsProxyOrCaptcha
+            ? { stealth: false, recording: recordingEnabled, ...(opts.profileId ? { profileId: opts.profileId } : {}) }
+            : { ...launchOpts, stealth: false };
           try {
-            browser = await client.launch({ ...launchOpts, stealth: false });
+            browser = await client.launch(retryOpts);
+            degraded = true;
           } catch (retryErr) {
             throw new InfraError(`Solari launch() failed: ${(retryErr as Error).message}`, retryErr);
           }
@@ -146,6 +172,7 @@ export function createLiveSolariClient(apiKey: string): SolariClient {
         sessionId,
         mode: "live",
         recordingEnabled,
+        degraded,
         async release() {
           if (released) {
             return { replayUrl: null, replayStatus: "disabled" as ReplayStatus };
