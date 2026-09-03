@@ -278,6 +278,27 @@ cookbook (`browser-quickstart-ts`, `browser-stealth-proxy-ts`) on
    it's the reason `solari/local.ts` passes `proxy` explicitly rather than
    relying on ambient env vars. A normal deploy target (Render, Vercel)
    won't have this restriction.
+10. **Solari's Free plan caps concurrent sessions at 3** — confirmed live
+    via `429 {"code":"ConcurrencyLimitExceeded","plan":"free","cap":3}`
+    the moment more than 3 `launch()` calls are in flight at once.
+    `fanout/index.ts`'s `staggerMs` (default 250ms between *launches*)
+    doesn't bound how many sessions are simultaneously *open* — with
+    multi-second session durations, 10 launches staggered by 250ms still
+    overlap well past 3 concurrent. `runTenfold` now takes a
+    `maxConcurrency` option (a real counting semaphore around each run's
+    launch→release window, not just a launch delay); the CLI and runner
+    both default it to `MAX_CONCURRENT_SESSIONS` (default 3) in live mode
+    only, since mock mode has no external limit to respect.
+11. **Solari's cloud browsers cannot reach `localhost`** — they run on
+    Solari's own infrastructure, not the machine that called `launch()`.
+    A live-mode run against `http://localhost:3100` (Flakemart) fails
+    with `NAVIGATION_ERROR` after Solari's own connect timeout (confirmed
+    live, ~35s). Live-mode verification against this repo's own Flakemart
+    demo target requires either deploying Flakemart somewhere public
+    (see `infra/deploy.md`) or tunneling it (ngrok or similar); it was
+    otherwise verified against Solari's real API surface (auth, the
+    stealth/plan fallback, the concurrency cap) rather than a full
+    successful Flakemart run end-to-end in live mode.
 
 ## Honest limitations
 

@@ -43,12 +43,20 @@ export function startRun(store: Store, stepMemoryStore: StepMemoryStore, input: 
       const client = createSolariClient(input.solariApiKey ?? null);
       const screenshotDir = join(SCREENSHOT_ROOT, input.runId);
 
+      // Solari's Free plan caps concurrent sessions at 3 (confirmed live
+      // via 429 ConcurrencyLimitExceeded); a paid plan or a BYOK caller on
+      // a higher tier can raise this via MAX_CONCURRENT_SESSIONS. Mock mode
+      // has no such external limit.
+      const maxConcurrency =
+        client.mode === "live" ? Number(process.env.MAX_CONCURRENT_SESSIONS ?? 3) : undefined;
+
       const report = await runTenfold(
         plan,
         {
           runId: input.runId,
           mode: client.mode,
           screenshotDir,
+          maxConcurrency,
           memory: {
             store: stepMemoryStore,
             targetHost: hostOf(input.targetUrl),

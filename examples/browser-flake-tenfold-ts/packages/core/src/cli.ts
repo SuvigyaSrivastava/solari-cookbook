@@ -63,11 +63,20 @@ async function main() {
       };
   if (memory) console.log(`Workflow memory: ${memoryPath}`);
 
+  // Solari's Free plan caps concurrent sessions at 3 (confirmed live via
+  // 429 ConcurrencyLimitExceeded) — firing all `plan.runs` launches at once
+  // fails most of them outright rather than queuing. Mock mode has no such
+  // external limit. MAX_CONCURRENT_SESSIONS lets a paid-plan user raise
+  // this; the CLI has no other way to know your plan tier.
+  const maxConcurrency =
+    client.mode === "live" ? Number(process.env.MAX_CONCURRENT_SESSIONS ?? 3) : undefined;
+
   const report = await runTenfold(
     plan,
     {
       mode: client.mode,
       memory,
+      maxConcurrency,
       onEvent: (e) => {
         if (e.type === "step.relearned") {
           console.log(`  run ${e.runIndex} step ${e.stepIndex}: re-learned (${e.reason})`);

@@ -13,6 +13,43 @@ export interface RunTenfoldOptions {
   mode: "live" | "mock";
   /** Workflow Memory (§11) — omit entirely to run with memory disabled. */
   memory?: MemoryContext;
+  /**
+   * Caps how many browser sessions are open at once across this one
+   * Tenfold run. `staggerMs` alone only delays *launches* — with a typical
+   * multi-second session duration, staggered launches still overlap well
+   * past a low concurrency cap. This matters specifically for live mode:
+   * Solari's Free plan caps concurrent sessions at 3 (confirmed live via
+   * `429 ConcurrencyLimitExceeded`), so firing all `plan.runs` launches at
+   * once against a free-tier key fails most of them outright rather than
+   * queuing. Mock mode has no such external limit, so this defaults to
+   * `Infinity` (no queuing) unless a caller opts in.
+   */
+  maxConcurrency?: number;
+}
+
+/** Minimal counting semaphore — see apps/runner/src/concurrency.ts, which
+ * this mirrors, for the demo/BYOK run-level version of the same idea. This
+ * one bounds concurrent *browser sessions within* a single Tenfold run. */
+function createSemaphore(limit: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  async function acquire(): Promise<() => void> {
+    if (active >= limit) {
+      await new Promise<void>((resolve) => queue.push(resolve));
+    }
+    active++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      active--;
+      const next = queue.shift();
+      if (next) next();
+    };
+  }
+
+  return { acquire };
 }
 
 /**
@@ -26,27 +63,37 @@ export async function runTenfold(plan: TestPlan, opts: RunTenfoldOptions, client
   const runId = opts.runId ?? randomUUID();
   const staggerMs = opts.staggerMs ?? 250;
   const emit = (event: TenfoldEvent) => opts.onEvent?.(event);
+  const semaphore = createSemaphore(opts.maxConcurrency ?? Infinity);
 
   const launches = Array.from({ length: plan.runs }, (_, runIndex) =>
     delay(runIndex * staggerMs).then(async () => {
-      emit({ type: "run.started", runId, runIndex, at: new Date().toISOString() });
-      const result = await executeRun(plan, client, runIndex, {
-        screenshotDir: opts.screenshotDir,
-        memory: opts.memory,
-        onStepCompleted: (step) => {
-          emit({ type: "step.completed", runId, runIndex, step, at: new Date().toISOString() });
-          if (step.memory === "relearned" && step.relearnReason) {
-            emit({
-              type: "step.relearned",
-              runId,
-              runIndex,
-              stepIndex: step.index,
-              reason: step.relearnReason,
-              at: new Date().toISOString(),
-            });
-          }
-        },
-      });
+      const release = await semaphore.acquire();
+      let result: RunResult;
+      try {
+        emit({ type: "run.started", runId, runIndex, at: new Date().toISOString() });
+        result = await executeRun(plan, client, runIndex, {
+          screenshotDir: opts.screenshotDir,
+          memory: opts.memory,
+          onStepCompleted: (step) => {
+            emit({ type: "step.completed", runId, runIndex, step, at: new Date().toISOString() });
+            if (step.memory === "relearned" && step.relearnReason) {
+              emit({
+                type: "step.relearned",
+                runId,
+                runIndex,
+                stepIndex: step.index,
+                reason: step.relearnReason,
+                at: new Date().toISOString(),
+              });
+            }
+          },
+        });
+      } finally {
+        // Release the concurrency slot as soon as this run's browser
+        // session is done (executeRun's own try/finally already closed
+        // it) — reporting the result below doesn't need the slot held.
+        release();
+      }
       emit({ type: "run.finished", runId, runIndex, result, at: new Date().toISOString() });
       if (result.replayUrl) {
         emit({
