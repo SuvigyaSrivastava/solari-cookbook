@@ -16,7 +16,8 @@
     "hono": "^4.6.9",
     "@hono/node-server": "^1.13.7",
     "zod": "^3.23.8",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

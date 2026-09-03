@@ -27,6 +27,7 @@ git clone <your fork>
 cd solari-cookbook/examples/browser-flake-tenfold-ts
 cp .env.example .env       # see "Running with zero API keys" below
 pnpm install
+npx playwright install chromium   # one-time; mock mode drives a real local Chromium (see below)
 pnpm dev:flakemart &        # deliberately flaky demo storefront, :3100
 pnpm dev:runner &           # runner service, :8787
 pnpm dev:web                # landing/run/report UI, :3000
@@ -35,6 +36,29 @@ pnpm dev:web                # landing/run/report UI, :3000
 Open http://localhost:3000, click **Run it 10 times**, watch 10 browsers
 race through the plan, get a report that says `FLAKY — 8/10 passed, fails at
 step 4, cause: ASSERTION_FAILED`.
+
+**The `npx playwright install chromium` step is easy to miss and fails
+loud, not quiet, if you do**: `playwright-core` (the dependency this repo
+actually uses — see below) is the driver only and does not bundle a browser
+binary. Skip this step and every single run fails instantly on step 1 with
+`INFRA_ERROR` (Playwright's "Executable doesn't exist" error, one per
+parallel run) — 0/N passed, no site-specific behavior at all. If you see
+that, this is almost certainly why.
+
+The runner and CLI both load `.env` automatically (via `dotenv`) — the
+runner from the example's root regardless of the directory `pnpm dev` is
+invoked from, the CLI from your current working directory. Nothing beyond
+`cp .env.example .env` is required for either to pick up `GROQ_API_KEY`,
+`DATABASE_URL`, etc.
+
+On Windows, if `corepack enable` / `corepack prepare pnpm@…` throws
+`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` (a known corepack/Node
+incompatibility on some Node 20.x builds, unrelated to this project), skip
+corepack and install pnpm directly instead: `npm install -g pnpm@9.12.0`
+(the version this repo's `packageManager` field pins). If that then fails
+with `EEXIST` on a `pnpm`/`pnpx` file under your Node install's global bin
+directory, a previous corepack attempt left a broken shim there — delete
+that file and re-run the install.
 
 ### Running with zero API keys
 

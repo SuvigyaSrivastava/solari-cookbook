@@ -1,9 +1,23 @@
+import { config as loadEnv } from "dotenv";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import { InMemoryStepMemoryStore } from "@tenfold/core";
 import { createServer } from "./server.js";
 import { createMemoryStore } from "./memoryStore.js";
 import { createPostgresStore } from "./postgresStore.js";
 import { createPostgresStepMemoryStore } from "./postgresStepMemoryStore.js";
+
+// The shared .env lives at the example's root (browser-flake-tenfold-ts/.env),
+// two levels above this file (apps/runner/src/index.ts) — not at whatever
+// directory the process happens to be launched from (`pnpm --filter runner
+// dev` runs with cwd=apps/runner, so a bare `dotenv/config` import would
+// silently find nothing and every process.env.* read below would fall back
+// to its default, exactly as happened the first time this was run outside
+// the sandbox it was built in). Explicit path, so it works the same whether
+// this is started via pnpm, `tsx src/index.ts` directly, or a built dist/.
+const here = dirname(fileURLToPath(import.meta.url));
+loadEnv({ path: resolve(here, "../../../.env") });
 
 const store = process.env.DATABASE_URL
   ? createPostgresStore(process.env.DATABASE_URL)

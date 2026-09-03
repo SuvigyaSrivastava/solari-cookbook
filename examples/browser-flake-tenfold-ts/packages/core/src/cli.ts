@@ -1,10 +1,16 @@
 #!/usr/bin/env node
+import "dotenv/config";
 import { readFile } from "node:fs/promises";
 import { compilePlan } from "./plan/compilePlan.js";
 import { runTenfold } from "./fanout/index.js";
 import { createSolariClient } from "./solari/index.js";
 import { FileStepMemoryStore } from "./memory/store.js";
 import { hostOf } from "./memory/applyMemory.js";
+
+// Loads .env from the current working directory (dotenv's default) — i.e.
+// wherever the CLI is invoked from, which per the README is the example's
+// root next to .env.example. If you run this from a different directory,
+// pass GROQ_API_KEY etc. via your shell's environment instead.
 
 /**
  * Minimal CLI for local development and the Day 1/2 acceptance criteria in
