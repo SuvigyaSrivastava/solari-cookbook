@@ -245,13 +245,33 @@ cookbook (`browser-quickstart-ts`, `browser-stealth-proxy-ts`) on
    that's the one thing left in the codebase that needs a real Solari key
    to confirm before a live deploy. It's isolated to a single file by
    design.
+
+   **UPDATE, confirmed live against a real key**: `getReplayUrl(id)` does
+   exist, and resolves `{url, expiresInSeconds, contentEncoding}` — an
+   object, not a bare string. The original `pollForReplay` treated the
+   whole object as the URL; fixed. `@solarisdk/browser` also turned out to
+   be a normal public npm package (registry.npmjs.org), not gated behind a
+   private registry as originally assumed from docs alone — it's a real
+   dependency of `@tenfold/core` now.
 7. **`stealth` and `proxy`/`captcha` aren't independent options.**
    `browser-stealth-proxy-ts` requests stealth explicitly alongside proxy
    and captcha-solving, and the docs note plain proxy/captcha requests get
    silently no-op'd without it. `live.ts` forces `stealth: true` whenever
    either `proxy` or `captcha` is requested, regardless of what the caller
    passed for `stealth` itself.
-8. **The sandbox this was built in required routing headless Chromium
+8. **`stealth` is a paid-plan feature — the Free tier gets `402
+   FeatureRequiresPlan`.** Confirmed live: a genuine free-tier
+   `SOLARI_API_KEY` returns `{"error":"Stealth mode requires a paid
+   plan","code":"FeatureRequiresPlan","feature":"stealth","plan":"free"}`
+   on every `launch()` call, since Tenfold defaults `stealth: true` (the
+   right choice against a real target). Rather than fail every run over a
+   plan limit that has nothing to do with the target site's own
+   flakiness, `live.ts` catches this specific error and retries once with
+   `stealth: false` — proxy/captcha both require stealth, so this
+   fallback only fires when neither was requested. A free-tier account
+   still gets a fully working live-mode run; a paid plan is unaffected
+   (its first `launch()` call already succeeds with stealth on).
+9. **The sandbox this was built in required routing headless Chromium
    through an explicit outbound proxy** (`HTTPS_PROXY`) with `localhost`
    bypassed — Chromium doesn't inherit `HTTPS_PROXY` from the environment
    the way `curl` or Node's `fetch` do. Not a Solari-specific gotcha, but
@@ -261,11 +281,15 @@ cookbook (`browser-quickstart-ts`, `browser-stealth-proxy-ts`) on
 
 ## Honest limitations
 
-- **`solari/live.ts` is unverified against a real key.** Everything in it is
-  built directly from the documented SDK shape and the real quickstart/
-  stealth-proxy examples in this cookbook, with the one remaining
-  ambiguity (`getReplayUrl()`'s existence) marked `[VERIFY]` in the file
-  itself. If it's wrong, it's a one-file fix.
+- **`solari/live.ts` is now verified against a real free-tier key**
+  (previously the one part of this codebase that wasn't). Launch,
+  free-plan stealth fallback, and the 401/402 error paths were all
+  exercised live; `getReplayUrl()`'s shape was corrected once a real key
+  actually returned one. Not yet independently exercised: a proxy or
+  captcha request against a paid plan, and the full recording →
+  `getReplayUrl` round trip past its ~1-3s documented delay (the free-plan
+  key used for verification doesn't have stealth, and proxy/captcha both
+  require it).
 - **LLM backend is Groq, not Anthropic**, per this build's constraints —
   `packages/core/src/llm/groq.ts` is the only file that would need to
   change to swap providers again.

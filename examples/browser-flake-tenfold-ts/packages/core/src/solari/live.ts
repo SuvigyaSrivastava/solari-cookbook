@@ -104,17 +104,37 @@ export function createLiveSolariClient(apiKey: string): SolariClient {
       const wantsProxyOrCaptcha = Boolean(opts.proxy || opts.captcha);
       const stealth = (opts.stealth ?? true) || wantsProxyOrCaptcha;
 
+      const launchOpts = {
+        stealth,
+        recording: recordingEnabled,
+        ...(opts.proxy ? { proxy: opts.proxy } : {}),
+        ...(opts.captcha !== undefined ? { captcha: opts.captcha } : {}),
+        ...(opts.profileId ? { profileId: opts.profileId } : {}),
+      };
+
       let browser: any;
       try {
-        browser = await client.launch({
-          stealth,
-          recording: recordingEnabled,
-          ...(opts.proxy ? { proxy: opts.proxy } : {}),
-          ...(opts.captcha !== undefined ? { captcha: opts.captcha } : {}),
-          ...(opts.profileId ? { profileId: opts.profileId } : {}),
-        });
+        browser = await client.launch(launchOpts);
       } catch (err) {
-        throw new InfraError(`Solari launch() failed: ${(err as Error).message}`, err);
+        // Free-tier accounts get `402 FeatureRequiresPlan` for `stealth`
+        // (confirmed live against a real free-plan key) — Tenfold defaults
+        // stealth on because that's the right choice for a real target, but
+        // a plan limit isn't the target site's fault, and it isn't worth
+        // failing 10/10 runs over when a plain (non-stealth) session would
+        // work fine against Flakemart or any other non-adversarial demo
+        // target. Degrade once, quietly, rather than hard-failing — proxy
+        // and captcha both require stealth, so this fallback only applies
+        // when neither was actually requested.
+        const code = (err as { code?: string })?.code;
+        if (code === "FeatureRequiresPlan" && stealth && !wantsProxyOrCaptcha) {
+          try {
+            browser = await client.launch({ ...launchOpts, stealth: false });
+          } catch (retryErr) {
+            throw new InfraError(`Solari launch() failed: ${(retryErr as Error).message}`, retryErr);
+          }
+        } else {
+          throw new InfraError(`Solari launch() failed: ${(err as Error).message}`, err);
+        }
       }
 
       const sessionId: string | null = browser.id ?? browser.sessionId ?? null;
