@@ -302,7 +302,23 @@ async function runStep(page: Page, step: Step, plan: TestPlan, memory?: MemoryCo
     case "type":
     case "select": {
       const resolution = await resolveWithMemory(page, step, memory);
+      const urlBefore = page.url();
       await performAction(page, step, resolution.locator);
+      // A click that navigates (e.g. "click the first search result")
+      // returns from .click() the instant the click event fires — it does
+      // NOT wait for the resulting page to load, unlike the "navigate"
+      // intent's own page.goto() a few lines up. Without this, the very
+      // next step (typically an "assert" reading page text, or another
+      // click) can run against a half-loaded page: confirmed live against
+      // Wikipedia, where a replay showed the correct article URL already
+      // loaded but the title-visibility assertion still failed, because
+      // verifyExpect's body.innerText() read fired before the new page's
+      // content had actually rendered. Only worth checking for "click" —
+      // type/select essentially never navigate on their own.
+      if (step.intent === "click" && page.url() !== urlBefore) {
+        await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+        await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => undefined);
+      }
       return resolution;
     }
     case "wait": {
