@@ -141,6 +141,9 @@ function locatorForSpec(page: Page, spec: LocatorSpec): Locator {
   if (spec.kind === "text") {
     return page.getByText(spec.text, { exact: false });
   }
+  if (spec.kind === "placeholder") {
+    return page.getByPlaceholder(spec.placeholder, { exact: false });
+  }
   return page.locator(spec.css);
 }
 
@@ -177,6 +180,22 @@ async function resolveWithLlm(page: Page, step: Step): Promise<ResolvedTarget | 
 
     const loc = locatorForSpec(page, spec);
     if ((await loc.first().count()) > 0) return { locator: loc.first(), spec };
+
+    // A very common real-world case: the LLM correctly names a form field
+    // by its visible/placeholder text (role: "textbox", name: "Username"),
+    // but the element has no accessible name at all — only a `placeholder`
+    // attribute, no <label> or aria-label (Saucedemo's login form is
+    // exactly this). getByRole's `name` matches accessible name, not
+    // placeholder, so it comes up empty even though the LLM's answer was
+    // right in substance. Before giving up, retry the same `name` as a
+    // placeholder for textbox/combobox roles — cheap, and covers this
+    // pattern without needing a second LLM round-trip.
+    if (spec.kind === "role" && (spec.role === "textbox" || spec.role === "combobox")) {
+      const phSpec: LocatorSpec = { kind: "placeholder", placeholder: spec.name };
+      const phLoc = locatorForSpec(page, phSpec);
+      if ((await phLoc.first().count()) > 0) return { locator: phLoc.first(), spec: phSpec };
+    }
+
     // The LLM answered, but its answer doesn't resolve to anything on the
     // real page — worth knowing about when this is the reason a step
     // reports ELEMENT_NOT_FOUND instead of assuming Groq was never reached.

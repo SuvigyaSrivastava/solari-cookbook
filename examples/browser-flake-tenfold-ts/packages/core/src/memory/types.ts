@@ -11,15 +11,25 @@
 /**
  * How resolveTarget actually found an element, in a form that can be
  * replayed later without re-running any heuristics: `getByRole(role, {
- * name })`, `getByText(text)`, or a raw CSS selector as a last resort.
- * Mirrors the shape resolveTarget's own LLM fallback already asks for
- * (§4.3), just with an explicit `kind` discriminant so it round-trips
- * through JSON/Postgres cleanly.
+ * name })`, `getByText(text)`, `getByPlaceholder(placeholder)`, or a raw CSS
+ * selector as a last resort. Mirrors the shape resolveTarget's own LLM
+ * fallback already asks for (§4.3), just with an explicit `kind`
+ * discriminant so it round-trips through JSON/Postgres cleanly.
+ *
+ * `placeholder` exists because a large share of real inputs (Saucedemo's
+ * login form included) have a `placeholder` attribute but no `<label>` or
+ * `aria-label` — Playwright's accessible name for such an element is empty,
+ * so `getByRole("textbox", { name: "Username" })` matches 0 elements even
+ * though a human (and the LLM resolver, correctly) would call it "the
+ * Username field". Confirmed live: Groq returned exactly
+ * `{role:"textbox", name:"Username"}` for Saucedemo, which is the right
+ * answer in English but an unrepresentable one in the old 3-kind spec.
  */
 export type LocatorSpec =
   | { kind: "role"; role: string; name: string }
   | { kind: "text"; text: string }
-  | { kind: "css"; css: string };
+  | { kind: "css"; css: string }
+  | { kind: "placeholder"; placeholder: string };
 
 export interface StepMemoryEntry {
   targetHost: string; // hostname only — memory is per site, per §11.1
