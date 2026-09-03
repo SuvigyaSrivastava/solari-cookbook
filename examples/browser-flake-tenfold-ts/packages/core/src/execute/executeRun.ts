@@ -400,6 +400,31 @@ async function runStep(page: Page, step: Step, plan: TestPlan, memory?: MemoryCo
       }
       return resolution;
     }
+    case "press": {
+      // Deliberately does NOT go through resolveTarget/resolveWithMemory —
+      // there is no element named "Enter" to resolve. Confirmed live as a
+      // real, silent bug: before the "press" intent existed, "Press Enter"
+      // was classified as intent "click" with target "Enter", which either
+      // threw ELEMENT_NOT_FOUND or (worse) fuzzy-matched some unrelated
+      // element via the generic text fallback — either way, no key was ever
+      // actually sent to the page. A real user pressing Enter sends it to
+      // whatever currently has focus (almost always the field from the
+      // immediately preceding "type" step), so page.keyboard.press does the
+      // same here — no element resolution needed or possible.
+      const key = step.value || "Enter";
+      await page.keyboard.press(key);
+      // Same reasoning as the "click" case above: pressing Enter in a
+      // search box commonly submits a form and navigates or triggers an
+      // async results load. Give the page a chance to settle before the
+      // next step (typically an "assert") reads its content, instead of
+      // racing a still-loading or still-updating results page. Unlike the
+      // click case, this isn't conditioned on the URL actually changing —
+      // a settle wait is cheap and correct whether Enter navigated,
+      // triggered an async fetch on the same page, or did nothing at all.
+      await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+      await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => undefined);
+      return undefined;
+    }
     case "wait": {
       await page.waitForLoadState("networkidle").catch(() => undefined);
       return undefined;

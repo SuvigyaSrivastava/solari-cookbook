@@ -9,6 +9,7 @@ export const StepIntent = z.enum([
   "click",
   "type",
   "select",
+  "press",
   "wait",
   "assert",
 ]);

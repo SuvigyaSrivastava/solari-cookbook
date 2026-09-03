@@ -36,4 +36,33 @@ describe("localCompile", () => {
     expect(steps[0]!.text).toBe('Click "Sign in"');
     expect(steps[1]!.text).toBe("Confirm the welcome banner is shown");
   });
+
+  // Confirmed live as a real, silent bug: "Press Enter" used to fall through
+  // to the default "click" branch (target "Enter", since stripLeadingVerb
+  // already knew "press" as a strippable verb) — there is no element named
+  // "Enter" to click, so the key was never actually sent to the page. A real
+  // MDN replay showed the search input received "array methods" correctly,
+  // but no navigation and no keyboard event ever followed — the search was
+  // simply never submitted, and every later assert failed against the
+  // still-open autocomplete dropdown.
+  it('compiles "Press Enter" as a "press" intent, not a click on a nonexistent "Enter" element', () => {
+    const steps = localCompile(["Press Enter"], "https://example.com");
+    expect(steps[0]).toMatchObject({ intent: "press", value: "Enter" });
+    expect(steps[0]!.target).toBeUndefined();
+  });
+
+  it('also recognizes "Hit Tab" and "Press Escape" as press steps with the right key name', () => {
+    const [tabStep] = localCompile(["Hit Tab"], "https://example.com");
+    expect(tabStep).toMatchObject({ intent: "press", value: "Tab" });
+
+    const [escStep] = localCompile(["Press Escape"], "https://example.com");
+    expect(escStep).toMatchObject({ intent: "press", value: "Escape" });
+  });
+
+  it('does not misclassify a click line that happens to contain the word "enter" elsewhere', () => {
+    // Guard against an overly greedy regex: "Enter your email" is a type-shaped
+    // instruction, not a "press Enter" key-press, and must still compile as such.
+    const [step] = localCompile(["Enter your email address"], "https://example.com");
+    expect(step!.intent).toBe("type");
+  });
 });

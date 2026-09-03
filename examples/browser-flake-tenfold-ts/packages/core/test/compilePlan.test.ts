@@ -28,6 +28,12 @@ describe("compilePlan — implicit navigate guarantee", () => {
     expect(plan.steps[0]).toMatchObject({ intent: "navigate", value: "https://github.com", index: 0 });
     expect(plan.steps).toHaveLength(4); // 1 implicit navigate + the original 3 lines
     expect(plan.steps[1]!.text).toBe("Click the search button");
+    // "Press Enter" must compile as a "press" intent (a real key sent via
+    // page.keyboard.press), not a click on a nonexistent "Enter" element —
+    // the latter was confirmed live to silently never submit the search at
+    // all, since resolveTarget has no element literally named "Enter" to
+    // find.
+    expect(plan.steps[3]).toMatchObject({ intent: "press", value: "Enter" });
     // Every step's `index` must match its array position after the prepend —
     // a stale index would misattribute the first-failure histogram.
     plan.steps.forEach((s, i) => expect(s.index).toBe(i));

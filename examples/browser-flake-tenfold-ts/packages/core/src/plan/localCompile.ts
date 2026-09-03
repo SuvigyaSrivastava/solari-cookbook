@@ -87,6 +87,37 @@ function compileLine(text: string, i: number, targetUrl: string): CompiledStep {
     };
   }
 
+  // --- press (keyboard key, not an element) --------------------------------------
+  // Confirmed live as a real, silent bug: "Press Enter" used to fall all the
+  // way through to the "default: click" branch below, because
+  // stripLeadingVerb already knew "press" as a strippable verb — producing
+  // intent "click", target "Enter". resolveTarget then went looking for a
+  // clickable element literally named "Enter", which doesn't exist on a
+  // real search box (the key that submits a form has no DOM element of its
+  // own). Confirmed via a live MDN replay: the search input received the
+  // typed text correctly, but the recording shows no navigation and no
+  // keyboard event after it at all — the click intent either silently
+  // no-op'd or matched something unrelated via the generic text fallback,
+  // and the search was simply never submitted, so every later "assert" step
+  // failed against the page's still-open autocomplete dropdown. Detecting
+  // this phrasing explicitly and giving it its own "press" intent (handled
+  // in executeRun.ts via page.keyboard.press) means Enter is actually sent
+  // to the currently-focused field, exactly like a real user pressing it
+  // right after typing. MUST run before the "type" check just below —
+  // "Press Enter" contains the bare word "enter", which that check's own
+  // regex also matches, so ordering alone previously guaranteed this branch
+  // could never be reached even after it existed.
+  const pressMatch = lower.match(/^(?:press|hit)\s+(enter|tab|escape|esc)\b/);
+  if (pressMatch) {
+    const key = normalizeKeyName(pressMatch[1]!);
+    return {
+      text,
+      intent: "press",
+      value: key,
+      expect: `pressing ${key} submits/advances with no visible error`,
+    };
+  }
+
   // --- type / apply / fill ----------------------------------------------------
   if (/\b(type|enter|apply|fill in|fill)\b/.test(lower)) {
     const code = extractCode(text) ?? quoted;
@@ -128,6 +159,12 @@ function compileLine(text: string, i: number, targetUrl: string): CompiledStep {
     target: clickTarget,
     expect: `clicking "${clickTarget}" succeeds with no visible error`,
   };
+}
+
+/** Maps the informal key names a user might type to Playwright's expected key names. */
+function normalizeKeyName(name: string): string {
+  const map: Record<string, string> = { enter: "Enter", tab: "Tab", escape: "Escape", esc: "Escape" };
+  return map[name.toLowerCase()] ?? name;
 }
 
 function firstQuoted(text: string): string | undefined {

@@ -11,7 +11,7 @@ import { localCompile, detectApplyCouponLine, detectClickAndConfirmLine } from "
 const SYSTEM_PROMPT = `You convert a numbered list of plain-English browser test steps into JSON.
 
 Return ONLY a JSON object of the shape:
-{"steps":[{"text":string,"intent":"navigate"|"click"|"type"|"select"|"wait"|"assert","target"?:string,"value"?:string,"expect":string}]}
+{"steps":[{"text":string,"intent":"navigate"|"click"|"type"|"select"|"press"|"wait"|"assert","target"?:string,"value"?:string,"expect":string}]}
 
 Rules:
 - One input line becomes exactly one step, in order. Never merge or split lines.
@@ -21,11 +21,18 @@ Rules:
   input. Never a compound phrase like "the coupon input and apply button" —
   pick the single element the intent's action applies to.
 - "value" is the literal text to type, option to choose, or URL to navigate to (omit if not applicable).
+- A line whose entire action is pressing a keyboard key with no element to
+  click — "Press Enter", "Hit Tab", "Press Escape" — is intent "press", NOT
+  "click". There is no element named "Enter"; treating it as a click target
+  makes the resolver either fail to find it or (worse) fuzzy-match some
+  unrelated element, and the key never actually gets sent. "target" is
+  omitted for "press"; "value" is the key name (e.g. "Enter", "Tab",
+  "Escape") — Playwright's own key-name spelling.
 - "expect" is REQUIRED on every step: a short, specific, checkable description
   of what the page should show if this step succeeded (a literal word/number/
   percentage that would actually appear is far better than a vague summary).
   Infer it even if the input line doesn't state it explicitly.
-- IMPORTANT for non-"assert" intents (navigate/click/type/select/wait):
+- IMPORTANT for non-"assert" intents (navigate/click/type/select/press/wait):
   "expect" describes only that the immediate mechanical action worked (the
   button was clickable, the field accepted the value, the page navigated) —
   never a downstream business outcome that a LATER step already checks. For
