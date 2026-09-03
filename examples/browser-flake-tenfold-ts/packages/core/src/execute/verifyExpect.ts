@@ -95,11 +95,34 @@ export async function verifyExpect(page: Page, expect: string, intent: StepInten
   }
 
   if (quoted) {
-    const found = bodyText.includes(quoted.toLowerCase());
-    return {
-      passed: found,
-      reason: found ? `Page contains "${quoted}"` : `Page does not contain "${quoted}"`,
-    };
+    const exact = bodyText.includes(quoted.toLowerCase());
+    if (exact) {
+      return { passed: true, reason: `Page contains "${quoted}"` };
+    }
+    // The exact phrase not appearing verbatim is NOT automatically a real
+    // failure — confirmed live against a genuinely working search flow:
+    // compilePlan quite reasonably wrote the "type" step's expect as
+    // `the search results contain "array methods"` (quoting the user's own
+    // typed value back), but a real results page for that query shows
+    // content ABOUT array methods (headings like "Array.prototype.map()",
+    // "Array.prototype.filter()") without ever containing that literal
+    // three-word phrase verbatim — a strict substring check turned a
+    // correctly-working search into a false ASSERTION_FAILED on every run.
+    // Fall back to a keyword-overlap check (same idea as resolveTarget's
+    // own keywordScan): every SIGNIFICANT word in the quoted phrase must
+    // still appear somewhere on the page, just not necessarily contiguous
+    // or in that exact order. This deliberately requires ALL words, not
+    // just some — a plan that expects "SAVE10 applied" and only finds
+    // "SAVE10" without "applied" anywhere should still fail, since that's
+    // a real, substantive difference, not a phrasing mismatch.
+    const words = significantWords(quoted);
+    if (words.length > 1) {
+      const allWordsPresent = words.every((w) => bodyText.includes(w));
+      if (allWordsPresent) {
+        return { passed: true, reason: `Page contains all of: ${words.join(", ")} (not as the exact phrase "${quoted}", but every significant word is present)` };
+      }
+    }
+    return { passed: false, reason: `Page does not contain "${quoted}"` };
   }
 
   const percent = expect.match(/(\d+)\s*%/);
@@ -205,4 +228,21 @@ async function verifyWithLlm(page: Page, bodyText: string, expect: string): Prom
 function firstQuoted(text: string): string | undefined {
   const m = text.match(/"([^"]+)"|'([^']+)'/);
   return m?.[1] ?? m?.[2];
+}
+
+// A small, deliberately generic stopword list for verification text — this
+// is quoted EXPECTATION phrases ("array methods", "SAVE10 applied"), not UI
+// element descriptions, so it doesn't need (and shouldn't share) resolveTarget's
+// own STOPWORDS list, which is tuned for words like "button"/"input"/"click".
+const VERIFY_STOPWORDS = new Set([
+  "a", "an", "the", "to", "for", "on", "in", "of", "and", "or", "is", "are",
+  "with", "this", "that", "it", "its",
+]);
+
+function significantWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !VERIFY_STOPWORDS.has(w));
 }
