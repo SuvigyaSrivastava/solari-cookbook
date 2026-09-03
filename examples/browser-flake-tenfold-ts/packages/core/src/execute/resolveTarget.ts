@@ -107,12 +107,101 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
     }
   }
 
+  // A real, common pattern on modern sites (GitHub, Slack, Notion, and many
+  // others) that every candidate above will always miss: the actual <input>
+  // for search does not exist in the DOM at all until an icon button or
+  // "Search..." affordance is clicked to open it (an overlay, a command
+  // palette, an expanding field). Confirmed live against github.com's real
+  // homepage — its only search element is a plain icon <button> in the nav;
+  // there is no textbox anywhere on the page until that button is clicked.
+  // A "type" step whose target sounds like a search field is exactly the
+  // case worth a deterministic, cheap reveal-then-retry before paying for
+  // the LLM resolver (which would face the identical problem: an ARIA
+  // snapshot of the CURRENT page also has no textbox to point at).
+  if (step.intent === "type" && /search/i.test(needle)) {
+    const revealed = await tryRevealSearchInput(page);
+    if (revealed) {
+      for (const { make, spec } of candidates) {
+        try {
+          const loc = make().first();
+          if ((await loc.count()) > 0) return { locator: loc, spec };
+        } catch {
+          // invalid selector shape for this candidate type — try the next one
+        }
+      }
+      // The needle ("search input", or whatever generic phrase the LLM
+      // plan used) very often won't literally match the revealed input's
+      // own placeholder/label text — confirmed against a GitHub-shaped
+      // fixture, where the real placeholder is "Search or jump to...",
+      // nothing like the generic target text. A keyword-overlap scan is
+      // already the established middle ground for this exact mismatch (see
+      // above), so try it against the freshly-revealed DOM too.
+      const kwFound = await keywordScan(page, "textbox", needle);
+      if (kwFound) return { locator: kwFound.locator, spec: { kind: "role", role: "textbox", name: kwFound.name } };
+
+      // Last resort for this reveal path specifically: a search overlay
+      // that was just opened by a click we ourselves triggered is
+      // overwhelmingly likely to contain exactly one purpose-built textbox
+      // (a command palette, a search modal) — if there's exactly one
+      // visible textbox anywhere on the page now, it's almost certainly
+      // the one we just revealed, even if neither its name nor placeholder
+      // textually resembles the plan's target phrase at all. The spec we
+      // persist to Workflow Memory here deliberately does NOT reuse the
+      // mismatched `needle` as a role name (that spec would never re-match
+      // on a future run) — instead it records the element's OWN accessible
+      // name/placeholder, whatever that actually is, so a later run's
+      // memory-reuse attempt targets the real thing rather than a phrase
+      // known not to match it.
+      const anyTextbox = page.getByRole("textbox");
+      const visibleCount = await anyTextbox.count().catch(() => 0);
+      if (visibleCount === 1) {
+        const loc = anyTextbox.first();
+        const ownName =
+          (await loc.getAttribute("aria-label").catch(() => null)) ??
+          (await loc.getAttribute("placeholder").catch(() => null)) ??
+          needle;
+        return { locator: loc, spec: { kind: "role", role: "textbox", name: ownName } };
+      }
+    }
+  }
+
   if (getGroqClient()) {
     const llmResult = await resolveWithLlm(page, step);
     if (llmResult) return llmResult;
   }
 
   throw new ElementNotFoundError(target);
+}
+
+/**
+ * Looks for a clickable trigger that plausibly opens a hidden search input
+ * (an icon-only button with an accessible name like "Search", "Search or
+ * jump to...", or an aria-label containing "search"), clicks the first one
+ * found, and gives the page a brief moment to render whatever it reveals
+ * (an overlay, a command palette, an expanding inline field). Returns
+ * whether a trigger was found and clicked — the caller re-runs its own
+ * textbox candidates afterward rather than this function guessing which
+ * locator strategy will find the newly-revealed input.
+ */
+async function tryRevealSearchInput(page: Page): Promise<boolean> {
+  const triggerCandidates: Array<() => Locator> = [
+    () => page.getByRole("button", { name: /search/i }),
+    () => page.locator('[aria-label*="search" i]'),
+    () => page.locator('button[aria-label*="search" i], [role="button"][aria-label*="search" i]'),
+  ];
+
+  for (const make of triggerCandidates) {
+    try {
+      const trigger = make().first();
+      if ((await trigger.count()) === 0) continue;
+      await trigger.click({ timeout: 2000 });
+      await page.waitForTimeout(300);
+      return true;
+    } catch {
+      // trigger not clickable (hidden, detached, etc.) — try the next strategy
+    }
+  }
+  return false;
 }
 
 /**
