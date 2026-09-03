@@ -105,7 +105,7 @@ export async function verifyExpect(page: Page, expect: string, intent: StepInten
   const isAssert = intent === "assert";
 
   if (getGroqClient() && isAssert) {
-    const llmResult = await verifyWithLlm(bodyText, expect);
+    const llmResult = await verifyWithLlm(page, bodyText, expect);
     if (llmResult) return llmResult;
   }
 
@@ -122,15 +122,51 @@ export async function verifyExpect(page: Page, expect: string, intent: StepInten
   };
 }
 
-async function verifyWithLlm(bodyText: string, expect: string): Promise<VerifyResult | null> {
+/**
+ * Selectors tried in order for the LLM verify sample, most-specific first.
+ * Confirmed live against Wikipedia why this matters: `<body>`'s first 3000
+ * characters there are entirely nav menu, table of contents, and a wall of
+ * ~180 language-switcher link names — the actual article title and content
+ * don't appear until well past that cutoff. A plain body-text slice biases
+ * against any page with substantial chrome before its main content, which
+ * describes most real sites with a nav bar or sidebar, not just Wikipedia.
+ */
+const MAIN_CONTENT_SELECTORS = ["main", "[role=main]", "article", "#content", "#mw-content-text"];
+
+/**
+ * Best-effort extraction of the page's actual content text for the LLM
+ * verifier, trying progressively less-specific selectors and falling back
+ * to the full body text (already computed by the caller) only if none of
+ * them exist or all come back empty. This intentionally does NOT replace
+ * the deterministic quoted-phrase/percent/order-number checks above, which
+ * still scan the full untruncated bodyText — those are cheap enough that
+ * "might be buried past a content selector's boundary" isn't a real risk;
+ * this only matters for the token-budget-limited slice sent to the LLM.
+ */
+async function extractVerifyText(page: Page, bodyTextFallback: string): Promise<string> {
+  for (const selector of MAIN_CONTENT_SELECTORS) {
+    try {
+      const loc = page.locator(selector).first();
+      if ((await loc.count()) === 0) continue;
+      const text = await loc.innerText();
+      if (text && text.trim().length > 40) return text.toLowerCase();
+    } catch {
+      // selector not present or not readable on this page — try the next one
+    }
+  }
+  return bodyTextFallback;
+}
+
+async function verifyWithLlm(page: Page, bodyText: string, expect: string): Promise<VerifyResult | null> {
   const model = process.env.RESOLVE_MODEL ?? "openai/gpt-oss-20b";
   try {
+    const sampleText = await extractVerifyText(page, bodyText);
     const raw = await chatText({
       model,
       system:
         'Answer with exactly one word, "PASS" or "FAIL", followed by a colon and a one-line reason. ' +
         "Does the page text satisfy the expectation?",
-      user: `Expectation: ${expect}\n\nPage text (truncated):\n${bodyText.slice(0, 3000)}`,
+      user: `Expectation: ${expect}\n\nPage text (truncated):\n${sampleText.slice(0, 3000)}`,
       maxTokens: 60,
     });
     const passed = /^pass/i.test(raw.trim());
