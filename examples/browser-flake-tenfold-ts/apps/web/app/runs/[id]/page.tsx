@@ -271,24 +271,31 @@ function ReportView({ run, report }: { run: RunRowClient; report: TenfoldReport 
             <th>Duration</th>
             <th>First failed step</th>
             <th>Cause</th>
+            <th>Reason</th>
             <th>Replay</th>
           </tr>
         </thead>
         <tbody>
-          {report.perRun.map((r) => (
-            <tr key={r.runIndex}>
-              <td className="num">{r.runIndex}</td>
-              <td>
-                <span className={`pill ${r.status}`}>{r.status}</span>
-              </td>
-              <td className="num">{(r.durationMs / 1000).toFixed(1)}s</td>
-              <td className="num">{r.firstFailureStep !== null ? r.firstFailureStep + 1 : "—"}</td>
-              <td>{r.cause ?? "—"}</td>
-              <td>
-                <ReplayCell run={r} runId={run.id} />
-              </td>
-            </tr>
-          ))}
+          {report.perRun.map((r) => {
+            const failedStep = r.firstFailureStep !== null ? r.steps[r.firstFailureStep] : undefined;
+            return (
+              <tr key={r.runIndex}>
+                <td className="num">{r.runIndex}</td>
+                <td>
+                  <span className={`pill ${r.status}`}>{r.status}</span>
+                </td>
+                <td className="num">{(r.durationMs / 1000).toFixed(1)}s</td>
+                <td className="num">{r.firstFailureStep !== null ? r.firstFailureStep + 1 : "—"}</td>
+                <td>{r.cause ?? "—"}</td>
+                <td style={{ maxWidth: 260 }} title={failedStep?.reason}>
+                  {failedStep?.reason ? truncate(failedStep.reason, 60) : "—"}
+                </td>
+                <td>
+                  <ReplayCell run={r} runId={run.id} />
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
 
