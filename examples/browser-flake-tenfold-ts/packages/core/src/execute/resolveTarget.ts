@@ -207,7 +207,30 @@ async function tryRevealSearchInput(page: Page): Promise<boolean> {
       const trigger = make().first();
       if ((await trigger.count()) === 0) continue;
       await trigger.click({ timeout: 2000 });
-      await page.waitForTimeout(300);
+
+      // A fixed sleep here is a real, confirmed source of flakiness, not a
+      // theoretical one: a live replay against github.com showed the click
+      // registering (aria-expanded flips true within ~30ms) but the actual
+      // <input role="combobox"> for the search dialog not landing in the
+      // DOM until ~190-350ms later — a portal-mounted dialog with its own
+      // mount/animation delay. A fixed `waitForTimeout(300)` raced ahead of
+      // that in two separate live runs: rrweb's own event log shows an
+      // "input" event firing on id -1 (its sentinel for "no matching node")
+      // BEFORE the real input node was even added, meaning resolveTarget
+      // had already grabbed and filled a stale/wrong locator by the time
+      // the real field existed. Waiting for an actual textbox/combobox to
+      // appear (bounded, so a page with no such reveal doesn't hang) is the
+      // correct fix, not a longer fixed guess.
+      try {
+        await page
+          .locator('[role="textbox"], [role="combobox"], input:not([type="hidden"]), textarea')
+          .first()
+          .waitFor({ state: "attached", timeout: 3000 });
+      } catch {
+        // Nothing appeared within the budget — still report the click as
+        // having happened; the caller's own candidate/keyword-scan retries
+        // will simply come up empty and fall through as before.
+      }
       return true;
     } catch {
       // trigger not clickable (hidden, detached, etc.) — try the next strategy
