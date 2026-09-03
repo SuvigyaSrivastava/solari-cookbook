@@ -14,6 +14,7 @@ import {
   type MemoryResolution,
 } from "../memory/applyMemory.js";
 import { simhash } from "../memory/simhash.js";
+import type { LocatorSpec } from "../memory/types.js";
 
 export interface ExecuteRunOptions {
   perStepTimeoutMs?: number;
@@ -72,10 +73,16 @@ export async function executeRun(
   let replayStatus: RunResult["replayStatus"] = "disabled";
 
   try {
+    // "none" is TestPlanOptions' explicit proxy opt-out (distinct from
+    // omitting the field, which lets shouldDefaultProxy decide) — it must
+    // never reach Solari's real launch options as the literal string
+    // "none", since SolariLaunchOptions.proxy only knows the real region
+    // value "us". Only a real region value gets forwarded.
+    const proxyOption = plan.options.proxy === "us" ? plan.options.proxy : undefined;
     session = await client.launch({
       stealth: plan.options.stealth,
       recording: true,
-      ...(plan.options.proxy ? { proxy: plan.options.proxy } : {}),
+      ...(proxyOption ? { proxy: proxyOption } : {}),
       captcha: plan.options.captcha,
       ...(plan.options.profileId ? { profileId: plan.options.profileId } : {}),
     });
@@ -159,13 +166,25 @@ export async function executeRun(
         opts.onStepCompleted?.(result);
       } catch (err) {
         const stepCause = classifyError(err);
+        const reason = err instanceof Error ? err.message : String(err);
+        // Full detail (including the enriched "what did it actually
+        // resolve to" context and stack trace, when this came through
+        // enrichActionError) always goes to the runner's own terminal, not
+        // just the report's `reason` field — confirmed painful live when a
+        // whole 10-run batch failed identically and the only way to see
+        // WHY was to painstakingly download and decode a session replay by
+        // hand, which doesn't even always cover the moment of failure.
+        console.error(
+          `[tenfold-core] run ${runIndex} step ${step.index} ("${step.text}") failed [${stepCause}]: ${reason}`,
+        );
+        if (err instanceof Error && err.stack) console.error(err.stack);
         const result: StepResult = {
           index: step.index,
           text: step.text,
           status: "failed",
           durationMs: Date.now() - t0,
           cause: stepCause,
-          reason: err instanceof Error ? err.message : String(err),
+          reason,
           screenshotPath: await maybeScreenshot(session.page, opts.screenshotDir, runIndex, step.index),
         };
         steps.push(result);
@@ -293,9 +312,38 @@ async function runStep(page: Page, step: Step, plan: TestPlan, memory?: MemoryCo
       const url = step.value || plan.targetUrl;
       const response = await page.goto(url, { waitUntil: "domcontentloaded" });
       if (response && response.status() >= 400) {
-        throw new NavigationError(`${url} responded with HTTP ${response.status()}`);
+        const status = response.status();
+        // A bare "responded with HTTP 403" reads like Tenfold or the
+        // target broke — confirmed live to be genuinely confusing (Amazon,
+        // eBay, IMDb, and Stack Overflow all returned exactly this, and
+        // each time it needed explaining that it's the site's own
+        // anti-automation defense, not a bug). 401/403 specifically, on
+        // the very FIRST navigation with no cookies or prior requests from
+        // this session, is the signature of a datacenter-IP block rather
+        // than a real auth wall (a real login gate would render a login
+        // PAGE with a 200, not refuse the connection outright) — worth
+        // naming explicitly so a user reading a report understands what
+        // happened and what to do about it, instead of assuming their test
+        // plan is wrong.
+        const isLikelyBotBlock = status === 401 || status === 403;
+        const message = isLikelyBotBlock
+          ? `${url} responded with HTTP ${status} — this usually means the site is blocking ` +
+            "automated/datacenter traffic (common on large commercial sites), not a problem with " +
+            "the test plan itself. Try enabling the residential proxy option if you're not already."
+          : `${url} responded with HTTP ${status}`;
+        throw new NavigationError(message);
       }
       await detectCaptcha(page, plan);
+      // Confirmed live against bbc.com: a cookie/consent overlay sat on
+      // top of the page after navigation and every subsequent step (a
+      // click on the search icon) silently did nothing, because the
+      // overlay — not the real page — was what actually received the
+      // click. This is the single most common reason a real-world site
+      // "just doesn't respond" to automation, far more common than any of
+      // the element-resolution issues fixed elsewhere in this file, so it
+      // runs unconditionally after every navigation, before any other step
+      // gets a chance to interact with the page.
+      await dismissConsentBanners(page);
       return undefined;
     }
     case "click":
@@ -303,7 +351,22 @@ async function runStep(page: Page, step: Step, plan: TestPlan, memory?: MemoryCo
     case "select": {
       const resolution = await resolveWithMemory(page, step, memory);
       const urlBefore = page.url();
-      await performAction(page, step, resolution.locator);
+      try {
+        await performAction(page, step, resolution.locator);
+      } catch (err) {
+        // A resolved-but-wrong-element failure (e.g. Playwright's own
+        // "Element is not an <input>, <textarea>...") used to surface with
+        // nothing but that generic message — no way to tell WHAT was
+        // actually resolved without re-running the whole thing under a
+        // debugger. Confirmed painful live: a real RESOLVER_ERROR against
+        // github.com took three separate live test cycles to track down
+        // because neither the report nor the runner's own console said
+        // which spec resolveTarget had picked or what tag/attributes it
+        // actually pointed to. Enriching the error here — cheap, and only
+        // on the failure path — means the NEXT time this happens, the
+        // report's own "Reason" column already has the answer.
+        throw await enrichActionError(err, step, resolution.spec, resolution.locator);
+      }
       // A click that navigates (e.g. "click the first search result")
       // returns from .click() the instant the click event fires — it does
       // NOT wait for the resulting page to load, unlike the "navigate"
@@ -347,6 +410,52 @@ async function performAction(page: Page, step: Step, locator: Awaited<ReturnType
     default:
       return;
   }
+}
+
+/**
+ * Wraps a thrown action error (Playwright's own message, e.g. "Element is
+ * not an <input>, <textarea>...") with WHAT resolveTarget actually resolved
+ * to — the LocatorSpec strategy that matched, plus the real element's tag
+ * name and a handful of identifying attributes. Without this, a
+ * RESOLVER_ERROR's `reason` field is just Playwright's generic complaint,
+ * which says nothing about which of several candidate strategies picked
+ * the wrong element or why. Confirmed expensive the hard way: a real
+ * github.com RESOLVER_ERROR took three live test cycles (each costing real
+ * Solari runs) to diagnose because neither the report nor the runner
+ * console said what had actually been resolved. This is deliberately
+ * best-effort — if introspecting the bad element ALSO throws (it may be
+ * detached, or the page navigated away), the original error still surfaces
+ * with the spec alone rather than being swallowed.
+ */
+async function enrichActionError(
+  err: unknown,
+  step: Step,
+  spec: LocatorSpec,
+  locator: Awaited<ReturnType<typeof resolveTarget>>["locator"],
+): Promise<Error> {
+  const original = err instanceof Error ? err : new Error(String(err));
+  let elementInfo = "(could not introspect the resolved element)";
+  try {
+    elementInfo = await locator.evaluate((el: any) => {
+      const attrList = Array.from(el.attributes ?? []) as Array<{ name: string; value: string }>;
+      const attrs = attrList
+        .slice(0, 6)
+        .map((a) => `${a.name}="${a.value}"`)
+        .join(" ");
+      const text = ((el.textContent ?? "") as string).trim().slice(0, 60);
+      return `<${el.tagName.toLowerCase()}${attrs ? " " + attrs : ""}>${text ? ` "${text}"` : ""}`;
+    });
+  } catch {
+    // best-effort only — see doc comment above
+  }
+  const specDesc = JSON.stringify(spec);
+  const enriched = new Error(
+    `${original.message} — resolveTarget for step ${step.index} ("${step.text}") matched via spec ${specDesc}, ` +
+      `which pointed to: ${elementInfo}`,
+  );
+  enriched.name = original.name;
+  enriched.stack = original.stack;
+  return enriched;
 }
 
 /**
@@ -402,6 +511,69 @@ class NavigationError extends Error {
   constructor(msg: string) {
     super(msg);
     this.name = "NavigationError";
+  }
+}
+
+/**
+ * Common cookie/consent-banner "accept" button patterns, most-specific
+ * (real vendor widgets) first, falling back to generic accessible-name
+ * matches. Deliberately ONLY matches accept/agree/allow-all language —
+ * never "reject", "manage", "settings", "customize", or "necessary only",
+ * since clicking one of those would change the page's actual behavior
+ * (and for a flakiness test, silently opting out of cookies/personalization
+ * is exactly the kind of side effect that could itself cause different
+ * flakiness on a later run). This deliberately does NOT try to detect
+ * whether a banner is actually present first — every selector below is
+ * scoped to a real accept-style label, so on a page with no banner at all
+ * every candidate simply matches zero elements and this is a no-op.
+ */
+const CONSENT_ACCEPT_SELECTORS: string[] = [
+  // OneTrust — one of the most widely deployed consent platforms.
+  "#onetrust-accept-btn-handler",
+  // Cookiebot.
+  "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+  "#CybotCookiebotDialogBodyButtonAccept",
+  // Quantcast Choice / IAB TCF generic mounts.
+  ".qc-cmp2-summary-buttons button[mode='primary']",
+  // Generic data-testid conventions seen across many custom banners.
+  "[data-testid='cookie-accept']",
+  "[data-testid='accept-all-cookies']",
+  "[data-testid='uc-accept-all-button']",
+];
+
+/**
+ * Dismisses whatever cookie/consent overlay is on the page, if any, by
+ * trying known vendor widget selectors first, then a generic accessible
+ * button-name scan ("Accept all", "Accept cookies", "I agree", "Allow
+ * all"), each bounded to a short timeout so a page with no banner at all
+ * costs only a handful of near-instant zero-count checks. Never throws —
+ * a consent banner that can't be dismissed is a degraded page, not a
+ * reason to fail the whole step, and the step that actually needs the
+ * page (the next click/type) will surface its own real error if the
+ * overlay really is still blocking interaction.
+ */
+async function dismissConsentBanners(page: Page): Promise<void> {
+  for (const selector of CONSENT_ACCEPT_SELECTORS) {
+    try {
+      const btn = page.locator(selector).first();
+      if ((await btn.count().catch(() => 0)) === 0) continue;
+      await btn.click({ timeout: 1500 });
+      await page.waitForTimeout(150);
+      return;
+    } catch {
+      // this vendor's widget isn't present or isn't clickable — try the next
+    }
+  }
+
+  const genericNamePattern = /^(accept all|accept cookies|accept|i agree|agree|allow all|got it)$/i;
+  try {
+    const candidate = page.getByRole("button", { name: genericNamePattern }).first();
+    if ((await candidate.count().catch(() => 0)) > 0) {
+      await candidate.click({ timeout: 1500 });
+      await page.waitForTimeout(150);
+    }
+  } catch {
+    // no matching button, or it wasn't clickable — leave the page as-is
   }
 }
 

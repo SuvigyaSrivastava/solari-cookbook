@@ -29,7 +29,9 @@ Zero dependencies, plain Node — the simplest possible Render deploy.
    RUNNER_PORT=10000          # Render injects PORT; set RUNNER_PORT to match, or
                               # read process.env.PORT directly if you prefer
    ALLOWED_ORIGIN=https://<your-vercel-web-domain>
-   FLAKEMART_URL=https://<your-flakemart-render-domain>
+   # Note: the runner never talks to Flakemart directly, so there is no
+   # FLAKEMART_URL variable here — Flakemart's deployed URL only matters to
+   # the WEB app below, as NEXT_PUBLIC_FLAKEMART_URL.
    DAILY_BUDGET_USD=3.00
    MAX_RUNS_PER_IP_PER_DAY=5
    DEFAULT_N=10
@@ -82,6 +84,15 @@ if this matters for judging day.
 - Once you have a `SOLARI_API_KEY`, set it on the runner service and
   redeploy — no code changes needed. Confirm `client.mode` flips to `"live"`
   (visible in the report's `mode` field) and that real replay links appear.
+- Real commercial sites (Amazon, eBay, IMDb, Stack Overflow — all confirmed
+  live) reject datacenter-IP traffic with a bare HTTP 403 before Tenfold's
+  own logic ever runs, which every cloud browser is vulnerable to. The
+  runner now defaults Solari's residential proxy (`options.proxy: "us"`) on
+  for any non-local target automatically — no action needed — but be aware
+  this adds real proxy cost/latency on every live run against an external
+  site; a target you control (your own staging/prod, or Flakemart itself)
+  gets no benefit from it either way, but pays the same small overhead. Set
+  `options.proxy` explicitly in a run request if you need to opt out.
 
 ## Forking upstream
 

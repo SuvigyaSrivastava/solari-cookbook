@@ -22,7 +22,7 @@ const CreateRunSchema = z.object({
     .object({
       stealth: z.boolean().optional(),
       captcha: z.boolean().optional(),
-      proxy: z.enum(["us"]).optional(),
+      proxy: z.enum(["us", "none"]).optional(),
     })
     .optional(),
 });

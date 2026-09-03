@@ -1,4 +1,12 @@
-import { compilePlan, createSolariClient, runTenfold, hostOf, type StepMemoryStore, type TestPlanOptions } from "@tenfold/core";
+import {
+  compilePlan,
+  createSolariClient,
+  runTenfold,
+  hostOf,
+  shouldDefaultProxy,
+  type StepMemoryStore,
+  type TestPlanOptions,
+} from "@tenfold/core";
 import type { Store } from "./store.js";
 import { publish } from "./pubsub.js";
 import { createSemaphore } from "./concurrency.js";
@@ -34,9 +42,28 @@ export function startRun(store: Store, stepMemoryStore: StepMemoryStore, input: 
     try {
       await store.updateRun(input.runId, { status: "running" });
 
+      // Real e-commerce and media sites (Amazon, eBay, IMDb, Stack
+      // Overflow — all confirmed live) reject requests from datacenter IPs
+      // outright with a bare HTTP 403, before any of Tenfold's own step
+      // logic even runs. Every cloud browser, Solari included, launches
+      // from exactly that kind of IP by default. A residential proxy is
+      // the standard, well-known fix the whole browser-automation industry
+      // uses for this — Solari already exposes it as `proxy: "us"` — but
+      // it was previously opt-in only via "advanced options", so the
+      // out-of-the-box experience against a real external site was a
+      // silent, confusing 403 instead of a working test. Default it on for
+      // any real external target (never for localhost/private targets,
+      // where there's no bot wall to route around and the "us" proxy would
+      // just be pointless extra latency); an explicit `options.proxy` from
+      // the caller always wins.
+      const options: Partial<TestPlanOptions> = {
+        ...input.options,
+        proxy: input.options?.proxy ?? (shouldDefaultProxy(input.targetUrl) ? "us" : undefined),
+      };
+
       const plan = await compilePlan(input.steps, input.targetUrl, {
         runs: input.runs,
-        options: input.options,
+        options,
       });
       await store.updateRun(input.runId, { plan });
 

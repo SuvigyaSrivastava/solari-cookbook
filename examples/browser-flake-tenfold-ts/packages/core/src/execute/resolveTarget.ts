@@ -198,9 +198,43 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
 async function tryRevealSearchInput(page: Page): Promise<boolean> {
   const triggerCandidates: Array<() => Locator> = [
     () => page.getByRole("button", { name: /search/i }),
+    () => page.getByRole("link", { name: /^search$/i }),
     () => page.locator('[aria-label*="search" i]'),
     () => page.locator('button[aria-label*="search" i], [role="button"][aria-label*="search" i]'),
+    // bbc.com's actual header trigger, confirmed from a screenshot: a
+    // combined icon that opens search, with common real-world markup
+    // conventions for it — a data-testid, or a title attribute, since not
+    // every real site puts a proper aria-label on every icon button (BBC's
+    // own accessibility can be inconsistent across the many CMS-driven
+    // components on a page this large).
+    () => page.locator('[data-testid*="search" i]'),
+    () => page.locator('[title*="search" i]'),
+    // Some sites use a <button> or <a> that visually contains ONLY an
+    // icon (svg/img) with no visible text and no aria-label at all, but do
+    // give the icon itself or a wrapping element a recognizable class name
+    // (e.g. "icon-search", "search-toggle", "SearchButton"). A CSS
+    // attribute-contains selector on class is a last-resort, lower-
+    // confidence signal — kept last in the list, and still gated behind
+    // the caller only reaching this function for a "type" step whose OWN
+    // target already mentions "search", so a false click here can only
+    // ever cost one extra click on an already-search-related page area.
+    () => page.locator('[class*="search-toggle" i], [class*="searchbutton" i], [class*="search-trigger" i]'),
   ];
+
+  const fillableSelector = '[role="textbox"], [role="combobox"], input:not([type="hidden"]), textarea';
+  // Snapshot how many fillable fields exist BEFORE clicking anything. This
+  // matters because a real page (github.com's homepage, concretely) can
+  // already have unrelated fillable fields on it before the reveal click —
+  // in that live case, two <input type="email"> newsletter-signup fields.
+  // A plain "wait for ANY fillable field to be attached" is a no-op on such
+  // a page: those inputs are already attached, so the wait resolves
+  // instantly, long before the real revealed field exists, defeating the
+  // entire point of waiting. This bug shipped once already — confirmed by
+  // three more live GitHub test failures AFTER the wait was added, all
+  // with the identical RESOLVER_ERROR, because the wait was never actually
+  // waiting for anything. Comparing against a pre-click count is what
+  // makes this a wait for a NEW field, not just any field.
+  const countBefore = await page.locator(fillableSelector).count().catch(() => 0);
 
   for (const make of triggerCandidates) {
     try {
@@ -213,23 +247,21 @@ async function tryRevealSearchInput(page: Page): Promise<boolean> {
       // registering (aria-expanded flips true within ~30ms) but the actual
       // <input role="combobox"> for the search dialog not landing in the
       // DOM until ~190-350ms later — a portal-mounted dialog with its own
-      // mount/animation delay. A fixed `waitForTimeout(300)` raced ahead of
-      // that in two separate live runs: rrweb's own event log shows an
-      // "input" event firing on id -1 (its sentinel for "no matching node")
-      // BEFORE the real input node was even added, meaning resolveTarget
-      // had already grabbed and filled a stale/wrong locator by the time
-      // the real field existed. Waiting for an actual textbox/combobox to
-      // appear (bounded, so a page with no such reveal doesn't hang) is the
-      // correct fix, not a longer fixed guess.
+      // mount/animation delay. Waiting for the fillable-field COUNT to
+      // increase past its pre-click value (bounded, so a page where the
+      // click didn't reveal anything new doesn't hang) is what actually
+      // detects the new field, unlike a plain existence check.
       try {
-        await page
-          .locator('[role="textbox"], [role="combobox"], input:not([type="hidden"]), textarea')
-          .first()
-          .waitFor({ state: "attached", timeout: 3000 });
+        await page.waitForFunction(
+          ({ selector, before }: { selector: string; before: number }) =>
+            (globalThis as any).document.querySelectorAll(selector).length > before,
+          { selector: fillableSelector, before: countBefore },
+          { timeout: 3000 },
+        );
       } catch {
-        // Nothing appeared within the budget — still report the click as
-        // having happened; the caller's own candidate/keyword-scan retries
-        // will simply come up empty and fall through as before.
+        // Nothing NEW appeared within the budget — still report the click
+        // as having happened; the caller's own candidate/keyword-scan
+        // retries will simply come up empty and fall through as before.
       }
       return true;
     } catch {

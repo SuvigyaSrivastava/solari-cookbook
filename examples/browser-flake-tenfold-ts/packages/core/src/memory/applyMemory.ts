@@ -41,6 +41,33 @@ export function hostOf(url: string): string {
   }
 }
 
+// Loopback and RFC1918/link-local ranges — anywhere a Solari-launched
+// browser would be reaching a target the CALLER controls (their own
+// staging box, a local dev server, a hosted demo like Flakemart's own
+// deployment). None of these have a reason to run behind a residential
+// proxy: there's no commercial bot wall to route around, and every hop
+// through a real residential IP only adds latency and (real) proxy cost
+// for zero benefit.
+const LOCAL_HOSTNAME_PATTERN =
+  /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|::1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/i;
+
+/**
+ * Whether a target URL should get Solari's residential proxy turned on by
+ * default. Real commercial sites — Amazon, eBay, IMDb, Stack Overflow, all
+ * confirmed live in testing — reject requests from datacenter IPs with a
+ * bare HTTP 403 before any of Tenfold's own logic runs at all, and every
+ * cloud browser (Solari included) launches from exactly that kind of IP by
+ * default. A residential proxy is the standard fix; this just means the
+ * out-of-the-box experience against a real external site doesn't require
+ * the caller to already know that and dig into "advanced options" first.
+ * Deliberately conservative — anything that looks like a local/private
+ * target returns false, since there's no bot wall there to route around.
+ */
+export function shouldDefaultProxy(targetUrl: string): boolean {
+  const host = hostOf(targetUrl);
+  return !LOCAL_HOSTNAME_PATTERN.test(host);
+}
+
 async function currentFingerprint(page: Page): Promise<string> {
   try {
     const snapshot = await (page.locator("body") as any).ariaSnapshot();

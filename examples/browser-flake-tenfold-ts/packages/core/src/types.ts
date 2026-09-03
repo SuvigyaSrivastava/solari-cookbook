@@ -27,7 +27,15 @@ export type Step = z.infer<typeof StepSchema>;
 export const TestPlanOptionsSchema = z.object({
   stealth: z.boolean().default(true),
   captcha: z.boolean().default(false),
-  proxy: z.enum(["us"]).optional(),
+  // "none" is a real, distinct value from omitting this field entirely:
+  // omission means "let Tenfold decide" (defaults to "us" for any real
+  // external target — see shouldDefaultProxy — since real commercial sites
+  // block datacenter IPs outright), while "none" is an explicit opt-out a
+  // caller can pass when they specifically don't want the proxy (e.g.
+  // testing against an internal target that would reject a residential IP
+  // for the opposite reason, or wanting to reproduce the exact bot-block
+  // behavior on purpose).
+  proxy: z.enum(["us", "none"]).optional(),
   profileId: z.string().optional(), // P1 — reuse logged-in session across runs
 });
 export type TestPlanOptions = z.infer<typeof TestPlanOptionsSchema>;
