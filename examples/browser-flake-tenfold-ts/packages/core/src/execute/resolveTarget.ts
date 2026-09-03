@@ -10,6 +10,29 @@ export class ElementNotFoundError extends Error {
   }
 }
 
+class LlmTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`LLM resolver call exceeded ${timeoutMs}ms`);
+    this.name = "LlmTimeoutError";
+  }
+}
+
+/** Local to this file — deliberately independent of executeRun.ts's own
+ * step-level withTimeout/StepTimeoutError, since a timed-out LLM call here
+ * should resolve to "no match" (letting the caller fall through to its
+ * normal ElementNotFoundError), not to a different, step-level error type. */
+async function withLlmTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new LlmTimeoutError(ms)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 export interface ResolvedTarget {
   locator: Locator;
   /** How this was found — persisted to Workflow Memory (§11) on success. */
@@ -315,14 +338,31 @@ async function resolveWithLlm(page: Page, step: Step): Promise<ResolvedTarget | 
 
   const model = process.env.RESOLVE_MODEL ?? "openai/gpt-oss-20b";
   try {
-    const raw = await chatJson({
-      model,
-      system:
-        'Given an ARIA snapshot of a web page and a natural-language target description, ' +
-        'return ONLY JSON: {"role":string,"name":string} OR {"text":string} OR {"css":string}. ' +
-        "Prefer role+name. Use css only as a last resort.",
-      user: `Target: ${step.target}\n\nARIA snapshot:\n${snapshot}`,
-    });
+    // Confirmed live: chatJson has no timeout of its own, and a slow/stuck
+    // Groq call here can silently eat the ENTIRE remaining step budget. When
+    // the outer per-step timeout (executeRun.ts) then fires and closes the
+    // page/browser out from under this still-in-flight call, every
+    // subsequent Playwright call this function makes (locator.count(),
+    // page.title(), etc., all used in its own error-diagnostic fallbacks)
+    // throws "Target page, context or browser has been closed" — a
+    // confusing secondary error that buries the real cause (this call
+    // simply took too long) and looked, at first glance, like Tenfold's own
+    // bug rather than an unbounded LLM call. Bounding it here means a slow
+    // Groq response reliably surfaces as this function returning `null`
+    // (falling through to the same ElementNotFoundError a real "no match"
+    // would produce) well before the outer step timeout, instead of
+    // racing it.
+    const raw = await withLlmTimeout(
+      chatJson({
+        model,
+        system:
+          'Given an ARIA snapshot of a web page and a natural-language target description, ' +
+          'return ONLY JSON: {"role":string,"name":string} OR {"text":string} OR {"css":string}. ' +
+          "Prefer role+name. Use css only as a last resort.",
+        user: `Target: ${step.target}\n\nARIA snapshot:\n${snapshot}`,
+      }),
+      Number(process.env.RESOLVE_LLM_TIMEOUT_MS ?? 8000),
+    );
     const rawSpec = JSON.parse(stripFences(raw));
     const spec: LocatorSpec | null =
       rawSpec.role && rawSpec.name
@@ -363,7 +403,18 @@ async function resolveWithLlm(page: Page, step: Step): Promise<ResolvedTarget | 
     // an auth/network/parse failure here looked identical to "the deterministic
     // heuristics just couldn't find it" until this was added, which made a
     // real live-mode ELEMENT_NOT_FOUND much harder to diagnose than it
-    // needed to be.
+    // needed to be. A timeout gets its own clearly-labeled branch (rather
+    // than folding into the generic message below) since it's the one
+    // failure mode confirmed live to otherwise look like a totally
+    // unrelated "page has been closed" crash once the outer step timeout
+    // raced this call and won.
+    if (err instanceof LlmTimeoutError) {
+      console.error(
+        `[tenfold-core] LLM resolver call for target "${step.target}" did not respond within ` +
+          `${err.timeoutMs}ms — treating as no match rather than letting it run past the step's own deadline.`,
+      );
+      return null;
+    }
     console.error(`[tenfold-core] LLM resolver call failed for target "${step.target}":`, err);
     return null;
   }
@@ -397,10 +448,31 @@ async function keywordScan(page: Page, role: string, needle: string): Promise<{ 
   const count = Math.min(await locator.count().catch(() => 0), 30);
   for (let i = 0; i < count; i++) {
     const el = locator.nth(i);
-    const name = (await el.innerText().catch(() => "")).toLowerCase();
+    const name = (await accessibleName(el)).toLowerCase();
     if (words.every((w) => name.includes(w))) return { locator: el, name };
   }
   return null;
+}
+
+/**
+ * Approximates the computed accessible name for a keyword-scan candidate.
+ * `innerText()` alone is NOT the accessible name — confirmed live to be a
+ * real, silent miss: GitHub's actual search trigger is an icon-only
+ * `<button aria-label="Search or jump to, type / to search">` with no
+ * visible text content at all, so `innerText()` returns "" and the keyword
+ * scan skipped straight past the one element that should have matched,
+ * falling through all the way to the (much slower, and in this case
+ * hanging) LLM resolver. `aria-label` wins when present (matches the real
+ * accessible-name-computation priority order closely enough for this
+ * heuristic's purposes — an exact implementation would also need
+ * aria-labelledby, native <label> association, alt/title, etc., but those
+ * either don't apply to button/link roles or are rare enough not to be
+ * worth the extra round trips here); falls back to visible text otherwise.
+ */
+async function accessibleName(el: Locator): Promise<string> {
+  const ariaLabel = await el.getAttribute("aria-label").catch(() => null);
+  if (ariaLabel && ariaLabel.trim()) return ariaLabel;
+  return el.innerText().catch(() => "");
 }
 
 function firstQuoted(text: string): string | undefined {
