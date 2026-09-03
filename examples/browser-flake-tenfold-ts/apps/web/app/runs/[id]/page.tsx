@@ -8,6 +8,10 @@ interface TileState {
   runIndex: number;
   status: "pending" | "running" | "passed" | "failed";
   currentStep?: string;
+  /** True while `currentStep` names a step that's actively executing right
+   * now (from step.started) rather than one that just finished — drives the
+   * "live" pulse in the tile so it reads as "doing this" vs. "just did this." */
+  stepInFlight?: boolean;
   stepsDone: number;
   cause?: string;
 }
@@ -30,6 +34,16 @@ export default function RunPage({ params }: { params: { id: string } }) {
           ...prev,
           [event.runIndex]: { runIndex: event.runIndex, status: "running", stepsDone: 0 },
         }));
+      } else if (event.type === "step.started") {
+        setTiles((prev) => ({
+          ...prev,
+          [event.runIndex]: {
+            ...(prev[event.runIndex] ?? { runIndex: event.runIndex, stepsDone: 0 }),
+            status: "running",
+            currentStep: event.text,
+            stepInFlight: true,
+          },
+        }));
       } else if (event.type === "step.completed") {
         const step: StepResult = event.step;
         setTiles((prev) => ({
@@ -38,6 +52,7 @@ export default function RunPage({ params }: { params: { id: string } }) {
             runIndex: event.runIndex,
             status: step.status === "failed" ? "failed" : "running",
             currentStep: step.text,
+            stepInFlight: false,
             stepsDone: step.index + 1,
             cause: step.cause,
           },
@@ -102,7 +117,12 @@ export default function RunPage({ params }: { params: { id: string } }) {
             <div key={i} className={`tile ${status}`}>
               <div className="idx">#{i}</div>
               <div className="status">{status}</div>
-              {t?.currentStep && <div style={{ color: "var(--text-faint)", marginTop: 4 }}>{truncate(t.currentStep, 40)}</div>}
+              {t?.currentStep && (
+                <div className={`tile-step ${t.stepInFlight ? "live" : ""}`}>
+                  {t.stepInFlight && <span className="live-dot" aria-hidden="true" />}
+                  {truncate(t.currentStep, 40)}
+                </div>
+              )}
             </div>
           );
         })}

@@ -324,6 +324,39 @@ code,
 .tile.running .status {
   color: var(--amber);
 }
+.tile-step {
+  color: var(--text-faint);
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+.tile-step.live {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  margin-top: 4px;
+  flex-shrink: 0;
+  animation: live-pulse 1.1s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+}
 
 .step-progress {
   display: flex;

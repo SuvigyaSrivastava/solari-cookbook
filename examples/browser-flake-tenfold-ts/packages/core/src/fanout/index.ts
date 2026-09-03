@@ -74,6 +74,16 @@ export async function runTenfold(plan: TestPlan, opts: RunTenfoldOptions, client
         result = await executeRun(plan, client, runIndex, {
           screenshotDir: opts.screenshotDir,
           memory: opts.memory,
+          onStepStarted: (step) => {
+            emit({
+              type: "step.started",
+              runId,
+              runIndex,
+              stepIndex: step.index,
+              text: step.text,
+              at: new Date().toISOString(),
+            });
+          },
           onStepCompleted: (step) => {
             emit({ type: "step.completed", runId, runIndex, step, at: new Date().toISOString() });
             if (step.memory === "relearned" && step.relearnReason) {

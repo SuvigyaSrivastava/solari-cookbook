@@ -73,6 +73,7 @@ export function subscribeToRunEvents(
   const source = new EventSource(`${RUNNER_URL}/runs/${runId}/events`);
   const types: TenfoldEvent["type"][] = [
     "run.started",
+    "step.started",
     "step.completed",
     "run.finished",
     "replay.ready",

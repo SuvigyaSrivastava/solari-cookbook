@@ -173,6 +173,14 @@ export interface TenfoldReport {
 export type TenfoldEvent =
   | { type: "run.started"; runId: string; runIndex: number; at: string }
   | {
+      type: "step.started";
+      runId: string;
+      runIndex: number;
+      stepIndex: number;
+      text: string;
+      at: string;
+    }
+  | {
       type: "step.completed";
       runId: string;
       runIndex: number;

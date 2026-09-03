@@ -18,6 +18,14 @@ import { simhash } from "../memory/simhash.js";
 export interface ExecuteRunOptions {
   perStepTimeoutMs?: number;
   screenshotDir?: string;
+  /**
+   * Fired the instant a step begins, before resolveTarget/verifyExpect run —
+   * this is what lets the UI show "run #3: typing into username field" live
+   * instead of only updating once the step has already finished. Purely a
+   * progress signal: nothing here affects pass/fail or memory bookkeeping,
+   * which all still hang off onStepCompleted.
+   */
+  onStepStarted?: (step: Step) => void;
   onStepCompleted?: (result: StepResult) => void;
   /** Workflow Memory (§11) — omit entirely to run with memory disabled. */
   memory?: MemoryContext;
@@ -85,6 +93,7 @@ export async function executeRun(
 
       const remaining = Math.max(1, Math.min(perStepTimeoutMs, deadline - Date.now()));
       const t0 = Date.now();
+      opts.onStepStarted?.(step);
       try {
         const memoryResolution = await withTimeout(runStep(session.page, step, plan, opts.memory), remaining);
         const verify = await withTimeout(verifyExpect(session.page, step.expect, step.intent), remaining);
