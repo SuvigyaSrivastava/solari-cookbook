@@ -7,16 +7,33 @@ export interface VerifyResult {
   reason: string;
 }
 
+// A bare "404" or "not found" is too naive to trust on a real page: Wikipedia
+// alone false-positived on this — its own citation footnote numbering
+// ("...claimed [404] according to...", the article's 404th reference) tripped
+// the old bare "404" check, on a page that loaded and rendered correctly.
+// Every phrase here is specific enough that real prose is very unlikely to
+// contain it incidentally, unlike a bare number or two common words.
 const ERROR_INDICATORS = [
   "internal server error",
   "something went wrong",
-  "404",
-  "not found",
   "application error",
   "undefined is not",
   "cannot read propert",
   "unhandled exception",
 ];
+
+// "404" and "not found"/"error" within a few words of each other (either
+// order — "404 Not Found", "Error 404: Not Found", "404 - page not found")
+// is a reliable real-error signal; either phrase ALONE is not, since
+// ordinary prose says "not found" constantly and a numbered citation can
+// just as easily read "[404]" as a footnote index, not an HTTP status.
+// Verified against the real Wikipedia page text that caused the original
+// false positive (230K+ chars, contains "[404]" as a citation number) —
+// this pattern correctly does not match it, while still matching real
+// 404-page phrasings including ones with a word ("page") between the
+// anchors, which a plain [^a-z0-9]-gap version would miss.
+const NOT_FOUND_PATTERN =
+  /\b404\b(?:\W+\w+){0,3}?\W+(not found|error)|\b(not found|error)(?:\W+\w+){0,3}?\W+\b404\b/i;
 
 /**
  * Verifies a step's `expect` condition against the current page state.
@@ -109,7 +126,8 @@ export async function verifyExpect(page: Page, expect: string, intent: StepInten
     if (llmResult) return llmResult;
   }
 
-  const hasErrorIndicator = ERROR_INDICATORS.some((e) => bodyText.includes(e));
+  const hasErrorIndicator =
+    ERROR_INDICATORS.some((e) => bodyText.includes(e)) || NOT_FOUND_PATTERN.test(bodyText);
   return {
     passed: !hasErrorIndicator,
     reason: hasErrorIndicator
@@ -172,7 +190,14 @@ async function verifyWithLlm(page: Page, bodyText: string, expect: string): Prom
     const passed = /^pass/i.test(raw.trim());
     const reason = raw.split(":").slice(1).join(":").trim() || raw.trim();
     return { passed, reason };
-  } catch {
+  } catch (err) {
+    // Previously silent — a failed LLM verify call fell straight through to
+    // the crude ERROR_INDICATORS substring scan with zero visibility into
+    // WHY the LLM path didn't run. That's exactly what made a real Wikipedia
+    // false-positive ("[404]", a citation footnote number, not an HTTP
+    // error) look like a mysterious page-content problem instead of what it
+    // actually was: this call throwing on every single attempt.
+    console.error(`[tenfold-core] LLM verify call failed for expectation "${expect}":`, err);
     return null;
   }
 }
