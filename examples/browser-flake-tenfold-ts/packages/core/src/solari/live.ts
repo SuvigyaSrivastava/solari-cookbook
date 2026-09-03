@@ -36,24 +36,28 @@ import type { ReplayStatus, SolariLaunchOptions } from "../types.js";
  * stealth on whenever either is requested, regardless of what was passed,
  * rather than sending a combination Solari would reject.
  *
- * [VERIFY] still open: `client.sessions.getReplayUrl()` is documented on
- * docs.getsolari.com/recording but the cookbook's own recording example
- * (browser-session-recording-py) only demonstrates `downloadReplay()` (raw
- * NDJSON bytes, polled up to ~30s). We prefer getReplayUrl for the web UI's
- * clickable "▶ Replay" link — a URL is far better UX than raw NDJSON — and
- * fall back to reporting "pending" (never a crash) if it turns out not to
- * exist on a real client. This is the one thing in the codebase that still
- * needs a live key to fully confirm, and it's isolated to `pollForReplay`
- * below.
+ * UPDATE (verified against the real installed package, @solarisdk/browser
+ * 0.1.3 from the public npm registry — it turned out NOT to be gated behind
+ * a private registry after all, `npm view @solarisdk/browser` resolves it
+ * from registry.npmjs.org same as any other package): `getReplayUrl(id)`
+ * is real and resolves `{url, expiresInSeconds, contentEncoding}` — an
+ * object, not a bare string. The original draft here (written from docs
+ * before this fork could install the real package to check) treated the
+ * whole object as the URL, which would have produced garbage replay links
+ * on every real run; fixed in `pollForReplay` below to destructure `.url`.
+ * `browser.close()` (the BrowserSession wrapper) is also confirmed to call
+ * `client.sessions.releaseAndWait()` internally, so the release path here
+ * doing nothing more than `await browser.close()` is correct as written.
  *
- * The SDK package (`@solarisdk/browser`) is gated behind Solari's private
- * registry, so it is intentionally NOT a hard dependency of this package —
- * installing it is a manual step for whoever has program access:
+ * `@solarisdk/browser` is a real dependency of `@tenfold/core` now
+ * (package.json), installed the normal way:
  *
  *   pnpm add @solarisdk/browser --filter @tenfold/core
  *
- * Until that's installed, launch() throws a clear error rather than a bare
- * module-not-found stack trace.
+ * The lazy dynamic import below predates that discovery and is kept mainly
+ * as a defensive fallback (a clear error instead of a bare
+ * module-not-found stack trace) in case someone's install is out of sync
+ * with the lockfile — not because the package is actually optional anymore.
  */
 
 const REPLAY_POLL_TIMEOUT_MS = Number(process.env.REPLAY_POLL_TIMEOUT_MS ?? 30_000);
@@ -68,10 +72,11 @@ export function createLiveSolariClient(apiKey: string): SolariClient {
 
   async function getClient(): Promise<any> {
     if (!clientPromise) {
-      // @ts-expect-error — `@solarisdk/browser` is gated behind Solari's
-      // private registry (see the file-level comment above) so it's
-      // intentionally not installed here; TS can't resolve its types until
-      // someone with program access runs `pnpm add @solarisdk/browser`.
+      // `@solarisdk/browser` is a real, normally-installed dependency of
+      // this package now (see the file-level comment above) — this dynamic
+      // import is kept mainly as a defensive fallback so a lockfile/install
+      // mismatch produces a clear, actionable error instead of a bare
+      // module-not-found stack trace, not because the package is optional.
       clientPromise = import("@solarisdk/browser")
         .then((mod: any) => {
           const Solari = mod.Solari ?? mod.default;
@@ -79,10 +84,10 @@ export function createLiveSolariClient(apiKey: string): SolariClient {
         })
         .catch((err) => {
           throw new Error(
-            "SOLARI_API_KEY is set but the `@solarisdk/browser` package is not " +
-              "installed (it's gated behind Solari's private registry). Run " +
-              "`pnpm add @solarisdk/browser --filter @tenfold/core`, or unset " +
-              "SOLARI_API_KEY to fall back to local mock mode.\n" +
+            "SOLARI_API_KEY is set but the `@solarisdk/browser` package failed " +
+              "to load. Run `pnpm install` (it's a normal dependency of " +
+              "@tenfold/core), or unset SOLARI_API_KEY to fall back to local " +
+              "mock mode.\n" +
               `Underlying error: ${(err as Error).message}`,
           );
         });
@@ -190,8 +195,16 @@ async function pollForReplay(
   const deadline = Date.now() + REPLAY_POLL_TIMEOUT_MS;
   for (;;) {
     try {
-      const url: string | null = await client.sessions.getReplayUrl(sessionId);
-      if (url) return { replayUrl: url, replayStatus: "ready" };
+      // Confirmed against the real @solarisdk/browser@0.1.3 type
+      // definitions: getReplayUrl() resolves an object
+      // ({url, expiresInSeconds, contentEncoding}), not a bare string. The
+      // original draft here (written against docs before this fork could
+      // install the real package) treated the whole object as the URL,
+      // which would have stored `[object Object]`-shaped data as every
+      // replay link once a real key was actually used.
+      const result: { url: string; expiresInSeconds: number; contentEncoding: string } | null =
+        await client.sessions.getReplayUrl(sessionId);
+      if (result?.url) return { replayUrl: result.url, replayStatus: "ready" };
     } catch {
       // 404 / not-ready-yet / method doesn't exist on this SDK version —
       // keep polling until the deadline either way.

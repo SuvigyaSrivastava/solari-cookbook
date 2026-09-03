@@ -167,7 +167,14 @@ export async function executeRun(
       }
     }
   } catch (err) {
-    // Launch itself failed (INFRA_ERROR) before we ever got a page.
+    // Launch itself failed (INFRA_ERROR) before we ever got a page. This is
+    // Tenfold's own miss, not the target site's fault, and the underlying
+    // error is usually a specific, actionable message (a missing dependency,
+    // a bad API key, a network error talking to Solari) — worth a
+    // console.error so it's visible in the runner's own terminal instead of
+    // only inside the stored report's `reason` field, which is easy to miss
+    // when a whole batch fails identically and instantly.
+    console.error(`[tenfold-core] run ${runIndex} launch/step failed:`, err);
     const c = classifyError(err);
     cause = c;
     firstFailureStep = firstFailureStep ?? 0;

@@ -72,6 +72,16 @@ export function startRun(store: Store, stepMemoryStore: StepMemoryStore, input: 
         await store.addSpend(report.cost.usd);
       }
     } catch (err) {
+      // This only catches a whole-run failure (e.g. compilePlan throwing) —
+      // per-step/per-browser errors are caught inside executeRun.ts and
+      // turned into a normal ASSERTION_FAILED/INFRA_ERROR/etc. step result,
+      // never reaching here. Both levels are worth a console.error: a
+      // silent catch here previously meant a genuine infra problem (e.g.
+      // @solarisdk/browser not installed, before it became a real
+      // dependency) produced zero output in the runner's own terminal,
+      // making a real, loud, well-messaged thrown Error look for all the
+      // world like the request never arrived.
+      console.error(`[tenfold-runner] run ${input.runId} failed:`, err);
       await store.updateRun(input.runId, {
         status: "error",
         error: err instanceof Error ? err.message : String(err),
