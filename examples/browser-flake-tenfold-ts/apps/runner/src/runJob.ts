@@ -82,10 +82,23 @@ export function startRun(store: Store, stepMemoryStore: StepMemoryStore, input: 
 
       // Solari's Free plan caps concurrent sessions at 3 (confirmed live
       // via 429 ConcurrencyLimitExceeded); a paid plan or a BYOK caller on
-      // a higher tier can raise this via MAX_CONCURRENT_SESSIONS. Mock mode
-      // has no such external limit.
-      const maxConcurrency =
-        client.mode === "live" ? Number(process.env.MAX_CONCURRENT_SESSIONS ?? 3) : undefined;
+      // a higher tier can raise this via MAX_CONCURRENT_SESSIONS.
+      //
+      // Mock mode has no *external* limit like that, but it's not free of
+      // limits either: it launches N real local Chromium processes on the
+      // runner's own instance, and each one costs real RAM. Confirmed live
+      // against this exact deploy — a 512MB Render free instance launching
+      // 10 concurrent local Chromium processes for a mock-mode run got
+      // OOM-killed mid-run ("Ran out of memory (used over 512MB)"),
+      // dropping the report entirely instead of returning 10 clean
+      // results. The old code left maxConcurrency `undefined` in mock mode
+      // on the theory that only the *live* Solari API has a concurrency
+      // limit to respect — true, but irrelevant: the constraint here is
+      // the runner's own memory, not an external API's rate limit.
+      const maxConcurrency = Number(
+        process.env[client.mode === "live" ? "MAX_CONCURRENT_SESSIONS" : "MOCK_MAX_CONCURRENT_SESSIONS"] ??
+          3,
+      );
 
       const report = await runTenfold(
         plan,
