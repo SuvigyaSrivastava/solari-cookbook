@@ -212,6 +212,57 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
     }
   }
 
+  // A structural gap distinct from (and found while stress-testing after
+  // fixing) the earlier press-intent/verify bugs: a native <select>'s
+  // accessible name is ALWAYS its currently-selected option's text — never
+  // a description of the element's own purpose — because that's simply how
+  // the browser computes it, not a quirk of any one badly-built page. A
+  // plan line like "Select X from the sort dropdown" reasonably compiles to
+  // target: "sort dropdown" (compilePlan's system prompt correctly asks for
+  // the single concrete element being acted on), but no candidate above,
+  // and no keyword scan, can ever match a target whose words ("sort",
+  // "dropdown") don't and structurally can't appear anywhere in the
+  // element's own accessible name or option text. Confirmed live against
+  // saucedemo.com's real sort control: a bare <select> with no <label>, no
+  // aria-label, options named "Name (A to Z)"/"Price (low to high)"/etc.,
+  // and an accessible name that's just whichever option is selected — 10/10
+  // real runs failed here even with the LLM resolver enabled, since an ARIA
+  // snapshot of this element genuinely contains nothing resembling "sort".
+  // The fix mirrors the search-reveal path's own "sole visible field on the
+  // page" reasoning below, generalized: for "select" specifically, if
+  // there's exactly ONE visible combobox/listbox anywhere on the page, it's
+  // overwhelmingly likely to be the one the plan means, regardless of
+  // whether its name textually resembles the target phrase at all — the
+  // same "there's only one plausible candidate" signal, just without
+  // needing a reveal click first. Multiple selects on the page (a real,
+  // possible case) correctly falls through to the LLM/generic fallbacks
+  // instead of guessing wrong.
+  if (step.intent === "select") {
+    for (const role of ["combobox", "listbox"] as const) {
+      const anyMatch = page.getByRole(role);
+      const visibleCount = await anyMatch.count().catch(() => 0);
+      if (visibleCount === 1) {
+        const loc = anyMatch.first();
+        // Persist the element's OWN current accessible name to Workflow
+        // Memory, not the mismatched `needle` — a future run's memory-reuse
+        // attempt needs to target what the element actually is. Deliberately
+        // NOT this file's shared accessibleName() helper here: that helper's
+        // innerText() fallback (tuned for buttons/links, where innerText IS
+        // the visible label) is wrong for a <select> specifically — a raw
+        // <select>'s innerText concatenates EVERY option's text ("Name (A to
+        // Z)\nName (Z to A)\nPrice (low to high)\n..."), not just the
+        // selected one, confirmed live against saucedemo's real markup.
+        // Playwright's actual computed accessible name for a combobox is
+        // its selected option's text alone (confirmed via this same page's
+        // real ARIA snapshot) — read that directly from the DOM instead.
+        const ownName = await loc
+          .evaluate((el: any) => el.options?.[el.selectedIndex]?.text ?? "")
+          .catch(() => "");
+        return { locator: loc, spec: { kind: "role", role, name: ownName || needle } };
+      }
+    }
+  }
+
   // A real, common pattern on modern sites (GitHub, Slack, Notion, and many
   // others) that every candidate above will always miss: the actual <input>
   // for search does not exist in the DOM at all until an icon button or
