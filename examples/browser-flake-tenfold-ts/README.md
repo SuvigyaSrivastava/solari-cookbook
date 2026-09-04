@@ -128,6 +128,74 @@ Nothing outside `packages/core/src/solari/` imports a Solari SDK type
 directly — swapping the live implementation for a different provider, or
 fixing an SDK signature mismatch, is a one-file change (`solari/live.ts`).
 
+### Three independently deployable pieces
+
+| Piece | What it is | Owns | Deployed to |
+| --- | --- | --- | --- |
+| `apps/web` | Next.js 14 app router | Landing page, run view, report page | Vercel |
+| `apps/runner` | Hono service on Node | The Solari API key, budget caps, run persistence, SSE | Render (Web Service) |
+| `apps/flakemart` | Plain Node, zero deps | The deliberately flaky demo storefront | Render (Web Service) |
+
+The web app never sees `SOLARI_API_KEY` or `GROQ_API_KEY` — it only ever
+talks to the runner over HTTP/SSE. That split exists because a single
+Tenfold run holds 10 open browser sessions for 60–180 seconds; that's the
+wrong shape for a Vercel serverless function, and the wrong thing to trust
+a browser client with a paid API key for anyway.
+
+### What actually happens when you click "Run it 10 times"
+
+```mermaid
+sequenceDiagram
+    participant Web as apps/web
+    participant Runner as apps/runner
+    participant Plan as core/plan/compilePlan
+    participant Fanout as core/fanout/runTenfold
+    participant Session as N × executeRun
+    participant Solari as Solari cloud Chrome
+    participant Analyze as core/analyze
+
+    Web->>Runner: POST /runs {targetUrl, steps, runs}
+    Runner->>Runner: check daily budget + per-IP cap
+    Runner-->>Web: 202 {runId} (returns immediately)
+    Runner->>Plan: compilePlan(steps) — ONCE, not per browser
+    Plan-->>Runner: compiled TestPlan (JSON steps)
+    Web->>Runner: GET /runs/:id/events (SSE, replays log on reconnect)
+    Runner->>Fanout: runTenfold(plan)
+    par 10 identical, independent sessions
+        Fanout->>Session: launch (bounded by hardDeadlineMs)
+        Session->>Solari: stealth Chrome + recording:true
+        loop every compiled step
+            Session->>Session: resolveWithMemory → resolveTarget
+            Session->>Solari: click / type / press / select
+            Session->>Session: verifyExpect (assert-intent gets LLM judgment)
+        end
+        Session->>Solari: release() → poll for replay URL
+        Session-->>Fanout: RunResult (pass/fail, cause, replay)
+        Fanout-->>Runner: run.finished event (streamed live over SSE)
+    end
+    Fanout->>Analyze: analyze(10 × RunResult)
+    Analyze-->>Runner: TenfoldReport (verdict, histogram, cause breakdown)
+    Runner-->>Web: report.ready event
+    Web->>Web: render STABLE / FLAKY / BROKEN + per-run replays
+```
+
+Two things worth calling out because they're easy to get wrong and this
+build was bitten by both during development:
+
+- **Compilation happens once per run, not once per browser.** All 10
+  sessions execute the *identical* compiled plan. This is what isolates
+  *site flakiness* (does the real page behave differently run to run) from
+  *agent interpretation variance* (did the LLM parse the English
+  differently this time) — conflating the two makes a flake rate
+  meaningless, since you'd never know which one you were actually
+  measuring.
+- **Session launch is on the same hard deadline as everything else.** Every
+  browser session gets `close()`d in a `finally` block on every exit path —
+  success, step failure, or a hard-deadline timeout — including launch
+  itself, which is bounded the same way step actions are (a real bug found
+  and fixed during this build: a stuck launch against a bot-walled target
+  used to be able to hang for hours with nothing catching it).
+
 ## Workflow Memory — the agent gets cheaper and faster every run
 
 The resolver (`execute/resolveTarget.ts`) is the single most expensive part
@@ -299,6 +367,29 @@ cookbook (`browser-quickstart-ts`, `browser-stealth-proxy-ts`) on
     otherwise verified against Solari's real API surface (auth, the
     stealth/plan fallback, the concurrency cap) rather than a full
     successful Flakemart run end-to-end in live mode.
+
+## Bugs found by actually running it against real sites
+
+The gotchas above are Solari's; these are Tenfold's own — found not by
+reasoning about the code, but by pointing a working build at real,
+unrelated live sites (MDN, Amazon, saucedemo.com) after the demo already
+passed, specifically to see what would break. All five were real,
+independently reproducible, and are now fixed and covered by tests.
+
+| # | Symptom | Root cause | Fix |
+| --- | --- | --- | --- |
+| 1 | "Press Enter" silently never submitted a search | No `press` intent existed — it compiled as a click on a nonexistent element named "Enter" | Added a real `press` intent end to end (compiler, executor) |
+| 2 | Same bug persisted after fix #1 | The LLM compiler (the default path whenever `GROQ_API_KEY` is set) kept misclassifying "Press Enter" — a brand-new intent with no few-shot example | A deterministic detector now overrides the LLM's guess for this shape, same pattern already used for coupon/confirm lines |
+| 3 | Every run against MDN quietly degraded to a non-stealth session | The runner defaulted Solari's residential proxy on for *any* non-local target, which forces `stealth: true`, which this plan's tier couldn't afford paired with proxy | Proxy now defaults off; an explicit 403 (rare, self-explanatory) is the signal to turn it on, not a guess |
+| 4 | A `type` step failed immediately after typing, before the next step ever ran | The verifier's "does the page contain this quoted phrase" check ran even on steps whose `expect` text just echoes back the value that was *just typed* — which can't appear in rendered text yet, since it lives in an `<input>`'s `.value` | The check now recognizes a self-referential echo and trusts "no exception" as proof the mechanical step already worked, same principle the verifier already applied to its LLM judgment |
+| 5 | 3 of 10 runs against a bot-walled site each took ~2.5 hours instead of failing in seconds | `client.launch()` had no timeout at all — every *other* wait in a run was bounded by the run's own hard deadline, but session acquisition itself wasn't | Launch now races against the same hard deadline as everything else; a session that shows up late is still released in the background so it doesn't leak cost |
+| 6 | A resolver miss against a real bot wall gave zero indication that's what happened | `ElementNotFoundError` only got enriched with "this looks like a bot block" when the *navigation itself* returned a 401/403 — a page that returns 200 but renders a block screen fell through with a bare, unhelpful message | The resolver now scans for known block-page phrasing right before giving up, and names it explicitly when found |
+| 7 | A `select` step on saucedemo.com's real sort dropdown failed 10/10 times, even with the LLM resolver on | A native `<select>`'s accessible name is *always* its selected option's text — the words "sort"/"dropdown" can never appear in it, no matter how the target is phrased | Added a "sole combobox on the page" fallback, generalizing a pattern the resolver already used one tier up for revealed search fields |
+
+None of these were guessable from reading the code in isolation — each one
+needed a real page with a real, unusual-but-common shape (a bare `<select>`
+with no label, a search box guarded by a bot wall, a step whose own success
+message echoes its input) to actually surface.
 
 ## Honest limitations
 

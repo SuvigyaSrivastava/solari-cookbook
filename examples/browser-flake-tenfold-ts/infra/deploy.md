@@ -86,13 +86,19 @@ if this matters for judging day.
   (visible in the report's `mode` field) and that real replay links appear.
 - Real commercial sites (Amazon, eBay, IMDb, Stack Overflow — all confirmed
   live) reject datacenter-IP traffic with a bare HTTP 403 before Tenfold's
-  own logic ever runs, which every cloud browser is vulnerable to. The
-  runner now defaults Solari's residential proxy (`options.proxy: "us"`) on
-  for any non-local target automatically — no action needed — but be aware
-  this adds real proxy cost/latency on every live run against an external
-  site; a target you control (your own staging/prod, or Flakemart itself)
-  gets no benefit from it either way, but pays the same small overhead. Set
-  `options.proxy` explicitly in a run request if you need to opt out.
+  own logic ever runs, which every cloud browser is vulnerable to. **The
+  runner does *not* default Solari's residential proxy on for you** — an
+  earlier version of this build did, and that turned out to be its own bug:
+  defaulting proxy on forces `stealth: true` too (Solari requires the
+  pairing), which a free/starter plan often can't support, silently
+  degrading *every* run — including ones against ordinary, non-bot-walled
+  sites that never needed a proxy at all (confirmed live against MDN Web
+  Docs, which doesn't block automation at all). Guessing "proxy needed"
+  against a site that isn't bot-walled fails silently and confusingly;
+  guessing "not needed" against one that is fails loudly with a clear 403
+  whose message already tells you to turn proxy on — so that's the safer
+  default. Pass `options.proxy: "us"` explicitly in a run request against a
+  target you know is bot-walled.
 
 ## Forking upstream
 
