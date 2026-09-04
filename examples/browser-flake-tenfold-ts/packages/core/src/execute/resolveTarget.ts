@@ -4,10 +4,65 @@ import type { LocatorSpec } from "../memory/types.js";
 import { chatJson, stripFences, getGroqClient } from "../llm/groq.js";
 
 export class ElementNotFoundError extends Error {
-  constructor(target: string) {
-    super(`No element found matching "${target}"`);
+  constructor(target: string, extraContext?: string) {
+    super(extraContext ? `No element found matching "${target}" — ${extraContext}` : `No element found matching "${target}"`);
     this.name = "ElementNotFoundError";
   }
+}
+
+// A small, deliberately narrow set of real block-page phrasings — confirmed
+// live against Amazon with no proxy: every navigation returned a plain 200
+// (so the executeRun navigate-step 401/403 bot-block message never fires —
+// that check only sees the HTTP status), and detectCaptcha's own "captcha"/
+// "verify you are human" scan doesn't match either — Amazon's own wording is
+// different and the resolver never even calls detectCaptcha's exact check.
+// The actual, confusing failure mode: a step trying to type into "search
+// input" and finding none, one full step after a page that visibly LOOKS
+// like a normal load, throws a bare ELEMENT_NOT_FOUND that gives a user no
+// hint the whole page they're driving is an anti-bot interstitial, not a
+// broken selector or a wrong test plan. Each phrase here is specific enough
+// that ordinary page prose won't contain it by coincidence (unlike a bare
+// "error" or "sorry"), the same design principle verifyExpect's own
+// ERROR_INDICATORS list already uses.
+const BOT_BLOCK_PAGE_INDICATORS = [
+  "to discuss automated access",
+  "automated access to amazon data",
+  "unusual traffic from your computer network",
+  "our systems have detected unusual traffic",
+  "enter the characters you see below",
+  "pardon our interruption",
+  "access to this page has been denied",
+  "you have been blocked",
+  "request could not be satisfied",
+];
+
+/**
+ * Best-effort, same pattern as executeRun.ts's own detectCaptcha: a cheap
+ * innerText() scan for known anti-bot phrasing, never thrown as its own
+ * error — just used to enrich ElementNotFoundError's message with the same
+ * "this is the site's defense, not your test plan" context the navigation-
+ * level 401/403 case already gives, for the case where the block is a
+ * rendered 200-status interstitial rather than a rejected connection.
+ * Swallows its own failures; a page mid-navigation or with no readable body
+ * simply gets the plain, unenriched error, exactly as before this existed.
+ */
+async function detectLikelyBotBlockPage(page: Page): Promise<string | undefined> {
+  try {
+    const text = (await page.locator("body").innerText()).toLowerCase();
+    const hit = BOT_BLOCK_PAGE_INDICATORS.find((phrase) => text.includes(phrase));
+    if (hit) {
+      return (
+        "the page looks like it's showing an anti-automation block/interstitial " +
+        `(found the phrase "${hit}"), not the site's real content — this is ` +
+        "usually the site's own bot defense, not a problem with the test plan. " +
+        "Try enabling the residential proxy option if you're not already."
+      );
+    }
+  } catch {
+    // page mid-navigation, body not readable, etc. — fall through to the
+    // plain error exactly as if this check didn't exist.
+  }
+  return undefined;
 }
 
 class LlmTimeoutError extends Error {
@@ -249,7 +304,8 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
     if (llmResult) return llmResult;
   }
 
-  throw new ElementNotFoundError(target);
+  const botBlockContext = await detectLikelyBotBlockPage(page);
+  throw new ElementNotFoundError(target, botBlockContext);
 }
 
 /**
