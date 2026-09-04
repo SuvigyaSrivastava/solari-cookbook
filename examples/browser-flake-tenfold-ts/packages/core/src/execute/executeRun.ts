@@ -79,12 +79,41 @@ export async function executeRun(
     // "none", since SolariLaunchOptions.proxy only knows the real region
     // value "us". Only a real region value gets forwarded.
     const proxyOption = plan.options.proxy === "us" ? plan.options.proxy : undefined;
-    session = await client.launch({
+
+    // Confirmed live as a real, serious bug: client.launch() itself was
+    // completely unbounded — every timeout in this file (withTimeout below,
+    // the per-step `remaining` budget) only starts counting AFTER a session
+    // already exists. Solari's own SDK doc comment (see live.ts) already
+    // warns launch/close is exactly the kind of call that "hangs forever"
+    // when something downstream goes wrong; against a bot-walled target
+    // (confirmed live against Amazon with no proxy — a condition this exact
+    // scenario, "site actively resists automation", makes far more likely
+    // than against an ordinary site) 3 of 10 runs hung for ~9131 seconds —
+    // 76x plan.hardDeadlineMs's own 120-second budget — while the other 7
+    // completed normally in under a minute. `hardDeadlineMs` is documented
+    // as a *hard* deadline; a session that never finishes launching must
+    // not be able to blow through it by two orders of magnitude.
+    //
+    // Race the launch itself against the run's own hard deadline (not a
+    // separate arbitrary constant — one run should never be allowed to run
+    // longer than the budget it was configured with, whether the time is
+    // spent launching or stepping). If the real launch eventually resolves
+    // after we've already given up and returned a TIMEOUT result, we still
+    // release it in the background (fire-and-forget, not awaited against
+    // this run's own timeline) so a real Solari session — and its billed
+    // browser time — doesn't leak just because Tenfold stopped waiting.
+    const launchBudgetMs = Math.max(1, deadline - Date.now());
+    const launchPromise = client.launch({
       stealth: plan.options.stealth,
       recording: true,
       ...(proxyOption ? { proxy: proxyOption } : {}),
       captcha: plan.options.captcha,
       ...(plan.options.profileId ? { profileId: plan.options.profileId } : {}),
+    });
+    session = await withTimeout(launchPromise, launchBudgetMs, () => {
+      launchPromise
+        .then((lateSession) => lateSession.release().catch(() => undefined))
+        .catch(() => undefined);
     });
     sessionId = session.sessionId;
     if (session.degraded) {
@@ -661,10 +690,25 @@ function failStep(step: Step, cause: Cause, reason: string): StepResult {
   return { index: step.index, text: step.text, status: "failed", durationMs: 0, cause, reason };
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+/**
+ * Races `promise` against a `ms` timer — NOT cancellation: `promise` keeps
+ * running in the background whether or not it wins the race, exactly like
+ * every other timeout in this file. Most callers (step actions/verifies)
+ * don't care once they've stopped waiting, since the whole session gets
+ * torn down at the end of the run regardless. `client.launch()` is the one
+ * exception: it hands back a live, billed Solari session with its own
+ * `release()` that nothing else in this function will ever call if we give
+ * up on it here — so `onTimeout` exists specifically for that caller to
+ * attach its own late cleanup, fired once, only when the timeout actually
+ * wins the race (never on a normal resolve/reject).
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
   let timer: NodeJS.Timeout;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new StepTimeoutError(`Step exceeded ${ms}ms`)), ms);
+    timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new StepTimeoutError(`Step exceeded ${ms}ms`));
+    }, ms);
   });
   try {
     return await Promise.race([promise, timeout]);
