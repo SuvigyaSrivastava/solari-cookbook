@@ -3,7 +3,6 @@ import {
   createSolariClient,
   runTenfold,
   hostOf,
-  shouldDefaultProxy,
   type StepMemoryStore,
   type TestPlanOptions,
 } from "@tenfold/core";
@@ -45,21 +44,32 @@ export function startRun(store: Store, stepMemoryStore: StepMemoryStore, input: 
       // Real e-commerce and media sites (Amazon, eBay, IMDb, Stack
       // Overflow — all confirmed live) reject requests from datacenter IPs
       // outright with a bare HTTP 403, before any of Tenfold's own step
-      // logic even runs. Every cloud browser, Solari included, launches
-      // from exactly that kind of IP by default. A residential proxy is
-      // the standard, well-known fix the whole browser-automation industry
-      // uses for this — Solari already exposes it as `proxy: "us"` — but
-      // it was previously opt-in only via "advanced options", so the
-      // out-of-the-box experience against a real external site was a
-      // silent, confusing 403 instead of a working test. Default it on for
-      // any real external target (never for localhost/private targets,
-      // where there's no bot wall to route around and the "us" proxy would
-      // just be pointless extra latency); an explicit `options.proxy` from
-      // the caller always wins.
-      const options: Partial<TestPlanOptions> = {
-        ...input.options,
-        proxy: input.options?.proxy ?? (shouldDefaultProxy(input.targetUrl) ? "us" : undefined),
-      };
+      // logic even runs. A residential proxy is the standard, well-known
+      // fix — Solari exposes it as `proxy: "us"` — but Tenfold has no way
+      // to know AHEAD of time whether a given external target actually
+      // needs one: shouldDefaultProxy's only signal is "not a local/private
+      // hostname", which is true for nearly every real site, bot-walled or
+      // not (confirmed live: a plain MDN Web Docs run defaulted proxy on
+      // via this exact logic, which forced stealth on too per live.ts, which
+      // together exceeded a free-tier plan's limits and silently degraded
+      // EVERY run to a plain, non-stealth session — for a target that never
+      // needed a proxy at all and loads just fine without one).
+      //
+      // The two wrong defaults have asymmetric costs. Guessing "no proxy
+      // needed" against a site that actually IS bot-walled fails loudly and
+      // actionably: a bare NAVIGATION_ERROR/403 whose message (see live.ts's
+      // isLikelyBotBlock handling in executeRun.ts) already tells the user
+      // exactly what happened and to turn proxy on. Guessing "proxy needed"
+      // against a site that ISN'T fails silently and confusingly instead —
+      // a degraded-session warning in the runner's own console that has no
+      // direct link to whatever downstream symptom it causes, which a user
+      // reading a report full of ASSERTION_FAILED reasons has no way to
+      // connect back to "your plan doesn't support stealth+proxy together."
+      // Given that, defaulting proxy OFF and letting a real 403 (which is
+      // rare, specific, and self-explanatory) be the signal to turn it on
+      // is the safer default — an explicit `options.proxy` from the caller
+      // still always wins either way.
+      const options: Partial<TestPlanOptions> = { ...input.options };
 
       const plan = await compilePlan(input.steps, input.targetUrl, {
         runs: input.runs,
