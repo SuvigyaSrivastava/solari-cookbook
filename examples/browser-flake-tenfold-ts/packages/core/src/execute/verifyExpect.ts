@@ -75,17 +75,54 @@ const NOT_FOUND_PATTERN =
  * proved the mechanical step succeeded, and skips the LLM literal-text
  * judgement entirely — while steps 1-4's DETERMINISTIC checks (a quoted
  * phrase, a percentage, an order-number pattern) still run regardless of
- * intent, since those are unambiguous either way. Only "assert" steps —
- * the ones whose entire purpose is "check what the page now shows" — pay
- * for the full LLM judgement call.
+ * intent, since those are unambiguous either way... with ONE confirmed
+ * exception, found live against a real MDN run: step 2 (the quoted-phrase
+ * check). compilePlan's own system prompt convention for a non-"assert"
+ * step's "expect" text is to echo the step's own `value` back inside quotes
+ * — a "type" step's expect reads `the value "array methods" is accepted by
+ * the search input`, a "select" step's reads `the option "X" is selected`.
+ * That quoted phrase is never a claim about page CONTENT — it's the exact
+ * same string as `step.value`, restating "the input now holds what I typed"
+ * — but firstQuoted() can't tell that apart from a genuine content claim
+ * like a "type" step whose expect happens to say `the search results
+ * contain "array methods"`. Checking the former against bodyText fails
+ * structurally and reliably: the typed value lives in the input's `.value`
+ * property (never in innerText()), and even if a dropdown/results preview
+ * happens to render it, there's a real race window right after `.fill()`
+ * where it hasn't yet — confirmed live: a real MDN run failed at its "type"
+ * step (not the later "press"/"assert" steps, despite every appearance of
+ * failing there) because this exact check ran against the still-rendering
+ * search modal and found neither the exact phrase nor full word-overlap
+ * yet. Fix: when the quoted phrase is exactly the step's own `value` (the
+ * thing that was just typed/selected, not something a human wrote as a
+ * separate content expectation) AND intent isn't "assert", skip the quoted-
+ * phrase check the same way step 5 already skips the LLM judgement, for the
+ * same reason — trust that "no exception" already proved the mechanical
+ * step succeeded. A quoted phrase that ISN'T an echo of `value` (a real
+ * content claim, on any intent, or any quoted phrase at all on an "assert"
+ * step) still goes through the full decisive check unchanged.
  */
-export async function verifyExpect(page: Page, expect: string, intent: StepIntent = "assert"): Promise<VerifyResult> {
+export async function verifyExpect(
+  page: Page,
+  expect: string,
+  intent: StepIntent = "assert",
+  stepValue?: string,
+): Promise<VerifyResult> {
   const url = page.url();
   const quoted = firstQuoted(expect);
 
   if (/\burl\b/i.test(expect) && quoted && url.includes(quoted)) {
     return { passed: true, reason: `URL contains "${quoted}"` };
   }
+
+  // See the doc comment above: a non-assert step's expect quotes back its
+  // own input value as an "the action worked mechanically" echo, not a page
+  // content claim — checking it against rendered text is exactly the kind
+  // of pre-action-phrasing-vs-post-action-page mismatch step 5's LLM skip
+  // already exists to avoid, just via the deterministic path instead.
+  const isSelfReferentialEcho =
+    intent !== "assert" && stepValue !== undefined && quoted !== undefined &&
+    quoted.trim().toLowerCase() === stepValue.trim().toLowerCase();
 
   let bodyText = "";
   try {
@@ -94,7 +131,7 @@ export async function verifyExpect(page: Page, expect: string, intent: StepInten
     /* page may have navigated away mid-check */
   }
 
-  if (quoted) {
+  if (quoted && !isSelfReferentialEcho) {
     const exact = bodyText.includes(quoted.toLowerCase());
     if (exact) {
       return { passed: true, reason: `Page contains "${quoted}"` };

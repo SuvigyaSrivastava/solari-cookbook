@@ -119,7 +119,7 @@ export async function executeRun(
       opts.onStepStarted?.(step);
       try {
         const memoryResolution = await withTimeout(runStep(session.page, step, plan, opts.memory), remaining);
-        const verify = await withTimeout(verifyExpect(session.page, step.expect, step.intent), remaining);
+        const verify = await withTimeout(verifyExpect(session.page, step.expect, step.intent, step.value), remaining);
         const durationMs = Date.now() - t0;
 
         if (!verify.passed) {
@@ -133,7 +133,7 @@ export async function executeRun(
           // assertion failure, not a memory artifact — no retry needed.
           if (opts.memory && memoryResolution?.source === "reused") {
             const relearned = await retryWithFreshResolve(session.page, step, plan);
-            const revalidated = await withTimeout(verifyExpect(session.page, step.expect, step.intent), remaining);
+            const revalidated = await withTimeout(verifyExpect(session.page, step.expect, step.intent, step.value), remaining);
             if (revalidated.passed) {
               await recordMemorySuccess(opts.memory, step, relearned);
               const result: StepResult = {
