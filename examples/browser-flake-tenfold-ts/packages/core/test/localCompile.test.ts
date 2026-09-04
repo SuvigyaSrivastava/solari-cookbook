@@ -65,4 +65,20 @@ describe("localCompile", () => {
     const [step] = localCompile(["Enter your email address"], "https://example.com");
     expect(step!.intent).toBe("type");
   });
+
+  it('recognizes realistic press phrasing beyond the bare "Press Enter" shape', () => {
+    // Broadened after confirming the line-start-only regex missed real
+    // phrasing variants a user might reasonably type.
+    for (const line of ["Press the Enter key", "Then press enter to search", "Press Enter to submit"]) {
+      const [step] = localCompile([line], "https://example.com");
+      expect(step, line).toMatchObject({ intent: "press", value: "Enter" });
+    }
+  });
+
+  it('does not false-positive "press"/"hit" phrasing that is not actually a key-press', () => {
+    for (const line of ["Press the checkout button", "Hit the submit button", "Press Sign in"]) {
+      const [step] = localCompile([line], "https://example.com");
+      expect(step!.intent, line).not.toBe("press");
+    }
+  });
 });

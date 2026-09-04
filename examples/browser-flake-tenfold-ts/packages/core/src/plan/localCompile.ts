@@ -48,6 +48,43 @@ export function detectClickAndConfirmLine(text: string): CompiledStep | null {
   };
 }
 
+/**
+ * Detects a standalone "Press/Hit Enter|Tab|Escape" line. Exported for the
+ * same reason as the two detectors above — and this one turned out to need
+ * it MORE than either: confirmed live against a real Groq-backed run (the
+ * LLM compiler path, which is what actually runs whenever GROQ_API_KEY is
+ * set, i.e. Tenfold's normal/default configuration) that the LLM kept
+ * classifying "Press Enter" as something other than the new "press" intent
+ * despite the system prompt explicitly describing it — sampling variance on
+ * a brand-new intent it has no few-shot example for, the same class of
+ * problem the coupon/confirm detectors below already exist to route around.
+ * A misclassification here is exactly as silent and exactly as costly as
+ * the original bug: whatever intent the LLM picks instead, nothing actually
+ * sends the Enter key to the page, so the search/form is never submitted
+ * and every later assert fails against the pre-submit page state. This
+ * detector is deterministic and wins outright over the LLM's guess,
+ * regardless of what the LLM said.
+ */
+export function detectPressLine(text: string): CompiledStep | null {
+  const lower = text.toLowerCase();
+  // Anchored on "press"/"hit" appearing anywhere in the line (not just as
+  // the very first word) followed, within a few words, by the key name —
+  // "the ... key" in between ("Press the Enter key") and a leading clause
+  // ("Then press enter to search") are both realistic real-world phrasings
+  // that a stricter line-start-only match would miss, silently falling
+  // back to whatever the LLM (or the click-default heuristic below) guessed
+  // instead — exactly the failure mode this detector exists to prevent.
+  const pressMatch = lower.match(/\b(?:press|hit)\b(?:\s+\w+){0,3}?\s+(enter|tab|escape|esc)\b/);
+  if (!pressMatch) return null;
+  const key = normalizeKeyName(pressMatch[1]!);
+  return {
+    text,
+    intent: "press",
+    value: key,
+    expect: `pressing ${key} submits/advances with no visible error`,
+  };
+}
+
 function compileLine(text: string, i: number, targetUrl: string): CompiledStep {
   const lower = text.toLowerCase();
   const quoted = firstQuoted(text);
@@ -57,6 +94,14 @@ function compileLine(text: string, i: number, targetUrl: string): CompiledStep {
 
   const clickAndConfirm = detectClickAndConfirmLine(text);
   if (clickAndConfirm) return clickAndConfirm;
+
+  // MUST be checked before "assert"/"confirm" too — none of those regexes
+  // happen to match "Press Enter", but keeping every deterministic-override
+  // detector grouped at the very top (before any of the heuristic branches
+  // below) is what makes it obvious at a glance that none of them can ever
+  // shadow each other by accident.
+  const press = detectPressLine(text);
+  if (press) return press;
 
   // --- assert / confirm ----------------------------------------------------
   if (/^(confirm|verify|check that|assert|make sure)/.test(lower) || lower.includes("should show") || lower.includes("should see")) {
@@ -84,37 +129,6 @@ function compileLine(text: string, i: number, targetUrl: string): CompiledStep {
       intent: "navigate",
       target: quoted ?? stripLeadingVerb(text, ["go to", "navigate to", "open"]),
       expect: `the ${quoted ?? "target"} page is shown`,
-    };
-  }
-
-  // --- press (keyboard key, not an element) --------------------------------------
-  // Confirmed live as a real, silent bug: "Press Enter" used to fall all the
-  // way through to the "default: click" branch below, because
-  // stripLeadingVerb already knew "press" as a strippable verb — producing
-  // intent "click", target "Enter". resolveTarget then went looking for a
-  // clickable element literally named "Enter", which doesn't exist on a
-  // real search box (the key that submits a form has no DOM element of its
-  // own). Confirmed via a live MDN replay: the search input received the
-  // typed text correctly, but the recording shows no navigation and no
-  // keyboard event after it at all — the click intent either silently
-  // no-op'd or matched something unrelated via the generic text fallback,
-  // and the search was simply never submitted, so every later "assert" step
-  // failed against the page's still-open autocomplete dropdown. Detecting
-  // this phrasing explicitly and giving it its own "press" intent (handled
-  // in executeRun.ts via page.keyboard.press) means Enter is actually sent
-  // to the currently-focused field, exactly like a real user pressing it
-  // right after typing. MUST run before the "type" check just below —
-  // "Press Enter" contains the bare word "enter", which that check's own
-  // regex also matches, so ordering alone previously guaranteed this branch
-  // could never be reached even after it existed.
-  const pressMatch = lower.match(/^(?:press|hit)\s+(enter|tab|escape|esc)\b/);
-  if (pressMatch) {
-    const key = normalizeKeyName(pressMatch[1]!);
-    return {
-      text,
-      intent: "press",
-      value: key,
-      expect: `pressing ${key} submits/advances with no visible error`,
     };
   }
 

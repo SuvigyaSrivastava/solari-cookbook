@@ -6,7 +6,7 @@ import {
   type TestPlanOptions,
 } from "../types.js";
 import { chatJson, stripFences, getGroqClient } from "../llm/groq.js";
-import { localCompile, detectApplyCouponLine, detectClickAndConfirmLine } from "./localCompile.js";
+import { localCompile, detectApplyCouponLine, detectClickAndConfirmLine, detectPressLine } from "./localCompile.js";
 
 const SYSTEM_PROMPT = `You convert a numbered list of plain-English browser test steps into JSON.
 
@@ -81,12 +81,20 @@ export async function compilePlan(
     ? (await compileWithLlm(lines, targetUrl, opts.model ?? process.env.PLAN_MODEL ?? "openai/gpt-oss-120b")).map(
         (s, i) => {
           const line = lines[i]!;
-          // A handful of compound-sentence shapes are common enough (and
-          // tricky enough) that we don't trust LLM sampling variance with
-          // them even at temperature 0 — see the two detectors' own
-          // comments. When the raw line matches one, the deterministic
-          // result wins outright; otherwise the LLM's step is used as-is.
-          const override = detectApplyCouponLine(line) ?? detectClickAndConfirmLine(line);
+          // A handful of line shapes are common enough (and tricky enough)
+          // that we don't trust LLM sampling variance with them even at
+          // temperature 0 — see each detector's own comment. detectPressLine
+          // in particular was added AFTER confirming live that the LLM
+          // compiler (the path that actually runs whenever GROQ_API_KEY is
+          // set, which is Tenfold's normal configuration) kept misclassifying
+          // "Press Enter" despite the system prompt above explicitly
+          // documenting the new "press" intent — a brand-new intent with no
+          // few-shot example is exactly the kind of instruction an LLM can
+          // silently ignore under sampling variance, even at temperature 0.
+          // When the raw line matches one of these detectors, the
+          // deterministic result wins outright over whatever the LLM said;
+          // otherwise the LLM's step is used as-is.
+          const override = detectApplyCouponLine(line) ?? detectClickAndConfirmLine(line) ?? detectPressLine(line);
           return override ?? { ...s, text: s.text.trim() === line ? s.text : line };
         },
       )
