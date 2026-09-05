@@ -274,6 +274,31 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
   // case worth a deterministic, cheap reveal-then-retry before paying for
   // the LLM resolver (which would face the identical problem: an ARIA
   // snapshot of the CURRENT page also has no textbox to point at).
+  // Unassociated visible-label fallback: a real, common form pattern
+  // (confirmed live against demoqa.com's Text Box page) where a <label>
+  // sits next to an input purely visually — same Bootstrap form-row grid,
+  // no `for`/`id` pairing, no wrapping, no aria-labelledby — so neither
+  // getByLabel() nor the accessible-name-based role/keyword-scan candidates
+  // above can ever connect the two: Playwright (correctly, per the real
+  // accessibility tree) computes the input's accessible name from its
+  // `placeholder` alone ("name@example.com"), which shares zero words with
+  // a target like "Email field". A sighted human has no trouble matching
+  // them because the label sits right next to the field, so this looks for
+  // a <label> (or label-like small text element) whose OWN text matches the
+  // needle, then finds the nearest fillable input in the same layout
+  // container — walking up a few ancestor levels the way a human's eye
+  // would scan "this row" rather than the whole page. Tried after every
+  // accessible-name-based signal (candidates, keyword scan) and before the
+  // LLM resolver: it's still a cheap, deterministic DOM query, and it
+  // catches exactly the case the LLM resolver's own ARIA-snapshot view
+  // structurally cannot — the snapshot has no way to represent "this label
+  // and this input are near each other" once the accessibility tree itself
+  // doesn't associate them.
+  if (step.intent === "type" || step.intent === "select") {
+    const fromLabel = await resolveViaUnassociatedLabel(page, needle, step.intent);
+    if (fromLabel) return fromLabel;
+  }
+
   if (step.intent === "type" && /search/i.test(needle)) {
     const revealed = await tryRevealSearchInput(page);
     if (revealed) {
@@ -357,6 +382,116 @@ export async function resolveTarget(page: Page, step: Step): Promise<ResolvedTar
 
   const botBlockContext = await detectLikelyBotBlockPage(page);
   throw new ElementNotFoundError(target, botBlockContext);
+}
+
+/**
+ * Finds a <label> (or small label-like text node) whose own text overlaps
+ * the target needle, then looks for the nearest fillable input/select
+ * sharing a layout container with it — covering forms where the label is
+ * visually adjacent but not programmatically associated (no `for`, no
+ * wrapping, no aria-labelledby). Returns a CSS-spec ResolvedTarget built
+ * from the matched element's own id/name/placeholder so Workflow Memory can
+ * replay it later without re-running this DOM walk.
+ *
+ * Runs entirely inside a single page.evaluate() — walking up ancestors and
+ * querying descendants per-candidate from Node would be a lot of round
+ * trips for what's fundamentally one DOM query.
+ */
+async function resolveViaUnassociatedLabel(
+  page: Page,
+  needle: string,
+  intent: "type" | "select",
+): Promise<ResolvedTarget | null> {
+  const words = significantWords(needle);
+  if (words.length === 0) return null;
+
+  const fillableSelector =
+    intent === "select" ? "select" : 'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea';
+
+  let cssSelector: string | null = null;
+  try {
+    cssSelector = await page.evaluate(
+      ({ words, fillableSelector }: { words: string[]; fillableSelector: string }) => {
+        const doc = (globalThis as any).document;
+        const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+
+        // Candidate label-like elements: real <label>s first (even if
+        // unassociated), then small heading/span/div text nodes some sites
+        // use instead of a real <label> — kept last and still gated behind
+        // "every significant word of the needle appears in this element's
+        // own direct text" so a false match needs real textual overlap, not
+        // just being nearby.
+        const labelLike = Array.from(doc.querySelectorAll("label, span, div, p")) as any[];
+
+        const isVisible = (el: any) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+
+        for (const el of labelLike) {
+          if (!isVisible(el)) continue;
+          // Only the element's OWN direct text (not children's), so a big
+          // wrapping <div> around the whole form doesn't spuriously "match"
+          // every field's label text concatenated together.
+          const ownText = Array.from(el.childNodes)
+            .filter((n: any) => n.nodeType === 3)
+            .map((n: any) => n.textContent || "")
+            .join(" ")
+            .trim();
+          if (!ownText) continue;
+          const elWords = norm(ownText);
+          const allPresent = words.every((w) => elWords.includes(w));
+          if (!allPresent) continue;
+
+          // If it's a real <label for="...">, that association would have
+          // already been caught by getByLabel() above — this path exists
+          // for the unassociated case, so skip labels that DO resolve to a
+          // real control (avoids double-handling and possible mismatches).
+          const forId = el.tagName === "LABEL" ? el.getAttribute("for") : null;
+          if (forId && doc.getElementById(forId)) continue;
+
+          // Walk up a few ancestor levels looking for the nearest fillable
+          // field in the same layout container — mirrors how a sighted user
+          // scans "this row/section", not the whole page. Attribute values
+          // are escaped by hand (quote/backslash only) rather than via
+          // CSS.escape() — this runs inside page.evaluate(), a plain
+          // browser-global context tsc has no DOM lib visibility into here,
+          // and ids/names/placeholders are virtually never anything more
+          // exotic than that in practice.
+          const escapeAttr = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          let container = el.parentElement;
+          for (let depth = 0; depth < 4 && container; depth++) {
+            const field = container.querySelector(fillableSelector);
+            if (field) {
+              if (field.id) return `#${field.id.replace(/([^a-zA-Z0-9_-])/g, "\\$1")}`;
+              if (field.name) return `${field.tagName.toLowerCase()}[name="${escapeAttr(field.name)}"]`;
+              // Last resort: a stable-enough path via placeholder, if present.
+              const placeholder = field.getAttribute("placeholder");
+              if (placeholder) return `[placeholder="${escapeAttr(placeholder)}"]`;
+              return null;
+            }
+            container = container.parentElement;
+          }
+        }
+        return null;
+      },
+      { words, fillableSelector },
+    );
+  } catch {
+    return null;
+  }
+
+  if (!cssSelector) return null;
+  try {
+    const loc = page.locator(cssSelector).first();
+    if ((await loc.count()) > 0) {
+      return { locator: loc, spec: { kind: "css", css: cssSelector } };
+    }
+  } catch {
+    // constructed selector was somehow invalid — fall through to caller's
+    // next strategy rather than throwing here.
+  }
+  return null;
 }
 
 /**
