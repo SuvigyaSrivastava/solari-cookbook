@@ -71,6 +71,7 @@ export async function executeRun(
   let captchaSolves = 0;
   let replayUrl: string | null = null;
   let replayStatus: RunResult["replayStatus"] = "disabled";
+  let degraded = false;
 
   try {
     // "none" is TestPlanOptions' explicit proxy opt-out (distinct from
@@ -122,9 +123,16 @@ export async function executeRun(
       // most commonly a free-tier key plus shouldDefaultProxy() having
       // requested `proxy: "us"` against a real external target. The run
       // still proceeds, but a bot-protected target may now 403/timeout for
-      // a plan reason rather than a Tenfold bug — worth a loud note in the
-      // runner terminal since it won't otherwise be obvious from a single
-      // run's failure cause.
+      // a plan reason rather than a Tenfold bug. This used to be ONLY a
+      // console.warn — confirmed live to be actively misleading: a report
+      // showing "NAVIGATION_ERROR: try enabling the residential proxy
+      // option" when proxy had already been requested and silently
+      // stripped by this exact fallback tells the user to try something
+      // that was already tried and can't have worked. `degraded` on the
+      // returned RunResult (see types.ts) is what actually fixes that —
+      // the console.warn stays too, since the runner's terminal is still
+      // useful for anyone watching it live.
+      degraded = true;
       console.warn(
         `[tenfold-core] run ${runIndex}: Solari session launched in a degraded ` +
           "configuration (stealth/proxy disabled) — the account's plan didn't " +
@@ -293,6 +301,7 @@ export async function executeRun(
     durationMs,
     browserHours: durationMsToBrowserHours(durationMs),
     captchaSolves,
+    degraded,
   };
 }
 

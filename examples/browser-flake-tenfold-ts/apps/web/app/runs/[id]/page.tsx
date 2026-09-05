@@ -227,6 +227,19 @@ function ReportView({ run, report }: { run: RunRowClient; report: TenfoldReport 
         <strong className="num">{report.ownMisses}</strong>
       </div>
 
+      {report.degradedRuns > 0 && (
+        <div className="own-misses" style={{ borderColor: "var(--accent)", background: "#fff3e0" }}>
+          <strong>
+            {report.degradedRuns}/{report.runs} run{report.degradedRuns === 1 ? "" : "s"} launched in a{" "}
+            <em>degraded</em> Solari session
+          </strong>{" "}
+          — this Solari account&apos;s plan didn&apos;t support the stealth/proxy options this run
+          requested, so those runs executed on a plain, unprotected browser instead. If they also
+          failed with a navigation error or timeout against a bot-protected target, that&apos;s why —
+          the fix is a Solari plan upgrade, not a change to your test plan.
+        </div>
+      )}
+
       {report.memory && (
         <>
           <div className="section-title">Workflow memory</div>
@@ -283,6 +296,14 @@ function ReportView({ run, report }: { run: RunRowClient; report: TenfoldReport 
                 <td className="num">{r.runIndex}</td>
                 <td>
                   <span className={`pill ${r.status}`}>{r.status}</span>
+                  {r.degraded && (
+                    <span
+                      title="Solari session launched without stealth/proxy — the account's plan didn't support what this run requested"
+                      style={{ marginLeft: 6, fontSize: 11, color: "var(--accent)", cursor: "help" }}
+                    >
+                      ⚠ degraded
+                    </span>
+                  )}
                 </td>
                 <td className="num">{(r.durationMs / 1000).toFixed(1)}s</td>
                 <td className="num">{r.firstFailureStep !== null ? r.firstFailureStep + 1 : "—"}</td>

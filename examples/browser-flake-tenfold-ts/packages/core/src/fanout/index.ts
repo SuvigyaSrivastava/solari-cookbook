@@ -143,6 +143,7 @@ export async function runTenfold(plan: TestPlan, opts: RunTenfoldOptions, client
           durationMs: 0,
           browserHours: 0,
           captchaSolves: 0,
+          degraded: false,
         },
   );
 

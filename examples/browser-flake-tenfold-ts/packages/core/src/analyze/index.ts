@@ -46,6 +46,7 @@ export function analyze(
   }
 
   const ownMisses = OWN_MISS_CAUSES.reduce((sum, c) => sum + causeBreakdown[c], 0);
+  const degradedRuns = perRun.filter((r) => r.degraded).length;
 
   const browserHours = perRun.reduce((sum, r) => sum + r.browserHours, 0);
   const captchaSolves = perRun.reduce((sum, r) => sum + r.captchaSolves, 0);
@@ -69,6 +70,7 @@ export function analyze(
     firstFailureHistogram,
     causeBreakdown,
     ownMisses,
+    degradedRuns,
     perRun,
     cost: { browserHours, usd, captchaSolves },
     timing: { p50Ms, p95Ms },

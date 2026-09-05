@@ -17,6 +17,7 @@ function makeRun(overrides: Partial<RunResult>): RunResult {
     durationMs: 1000,
     browserHours: 1000 / 3_600_000,
     captchaSolves: 0,
+    degraded: false,
     ...overrides,
   };
 }

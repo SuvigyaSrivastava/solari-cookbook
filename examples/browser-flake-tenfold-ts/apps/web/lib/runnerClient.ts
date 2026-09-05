@@ -35,7 +35,7 @@ export interface CreateRunInput {
   targetUrl: string;
   steps: string[];
   runs?: number;
-  options?: { stealth?: boolean; captcha?: boolean; proxy?: "us" };
+  options?: { stealth?: boolean; captcha?: boolean; proxy?: "us" | "none" };
   solariApiKey?: string;
 }
 

@@ -63,7 +63,7 @@ export const CompiledStepSchema = StepSchema.omit({ index: true });
 export type CompiledStep = z.infer<typeof CompiledStepSchema>;
 
 export const CompiledPlanSchema = z.object({
-  steps: z.array(CompiledStepSchema).min(1).max(12),
+  steps: z.array(CompiledStepSchema).min(1),
 });
 
 // ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ export const Cause = z.enum([
   "RESOLVER_ERROR", // Tenfold's own miss
   "INFRA_ERROR", // Tenfold's own miss
   "NEEDS_HUMAN", // Workflow Memory (§11.2 step 4): reuse AND a fresh re-learn both failed
-]);
+);
 export type Cause = z.infer<typeof Cause>;
 
 export const OWN_MISS_CAUSES: readonly Cause[] = [
@@ -135,6 +135,22 @@ export interface RunResult {
   durationMs: number;
   browserHours: number;
   captchaSolves: number;
+  /**
+   * True when live.ts had to silently drop stealth/proxy for this run
+   * because the Solari account's plan returned `402 FeatureRequiresPlan`
+   * for what was requested (most commonly a free-tier key plus
+   * shouldDefaultProxy() defaulting `proxy: "us"` on for a real external
+   * target). The run still executed, but on a plain, unprotected session —
+   * so a bot-protected target failing here (NAVIGATION_ERROR/403, or a
+   * timeout) is a plan limitation, not a bug in the resolver or the test
+   * plan. Confirmed live: before this field existed, this case was only a
+   * server-side console.warn, invisible in the actual report — a user
+   * reading "NAVIGATION_ERROR: try enabling the residential proxy option"
+   * had no way to know proxy had ALREADY been requested and silently
+   * stripped, making the suggested fix look like it should have worked
+   * when it never had a chance to.
+   */
+  degraded: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +170,17 @@ export interface TenfoldReport {
   firstFailureHistogram: Record<number, number>; // step index -> count
   causeBreakdown: Record<Cause, number>;
   ownMisses: number;
+  /**
+   * Count of runs (out of `runs`) whose Solari session launched degraded —
+   * see RunResult.degraded. A run's own `cause`/`reason` already explain
+   * what failed on the page; this is the separate, plan-level explanation
+   * for WHY stealth/proxy weren't actually active, so a report full of
+   * NAVIGATION_ERROR/403s against a bot-protected target doesn't read as
+   * "Tenfold's stealth mode doesn't work" when the real story is "this
+   * account's plan doesn't support stealth+proxy, so none of these runs
+   * ever actually tried them."
+   */
+  degradedRuns: number;
   perRun: RunResult[];
   cost: {
     browserHours: number;

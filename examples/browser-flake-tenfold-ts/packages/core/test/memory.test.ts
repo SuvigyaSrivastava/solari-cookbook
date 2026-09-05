@@ -115,6 +115,7 @@ describe("analyze — Workflow Memory summary", () => {
       durationMs: 500,
       browserHours: 0,
       captchaSolves: 0,
+      degraded: false,
     };
   }
 

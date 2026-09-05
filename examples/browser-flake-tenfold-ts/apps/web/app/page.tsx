@@ -21,6 +21,17 @@ export default function LandingPage() {
   const [runs, setRuns] = useState(10);
   const [stealth, setStealth] = useState(true);
   const [captcha, setCaptcha] = useState(false);
+  // "auto" leaves it to Tenfold's own shouldDefaultProxy() heuristic (proxy
+  // on for any real external target); "us"/"none" are explicit overrides —
+  // see TestPlanOptions.proxy's own comment in packages/core/src/types.ts
+  // for why "not set" and "off" are meaningfully different states, not the
+  // same thing with a different label. Exposed here (not just via
+  // shouldDefaultProxy's silent guess) because a free-tier Solari account
+  // can't actually afford proxy+stealth together — confirmed live via
+  // 402 FeatureRequiresPlan against a real bot-protected target — so a
+  // BYOK caller on a paid plan needs a way to force it on explicitly rather
+  // than hoping the auto-heuristic's guess lines up with their plan limits.
+  const [proxy, setProxy] = useState<"auto" | "us" | "none">("auto");
   const [advanced, setAdvanced] = useState(false);
   const [byokKey, setByokKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -51,7 +62,7 @@ export default function LandingPage() {
         targetUrl,
         steps,
         runs,
-        options: { stealth, captcha },
+        options: { stealth, captcha, ...(proxy === "auto" ? {} : { proxy }) },
         solariApiKey: byokKey.trim() || undefined,
       });
       router.push(`/runs/${runId}`);
@@ -216,6 +227,24 @@ export default function LandingPage() {
               <label htmlFor="captcha" style={{ margin: 0, textTransform: "none" }}>
                 Solve captchas ($0.01/solve)
               </label>
+            </div>
+            <div className="form-row">
+              <label htmlFor="proxy">Residential proxy</label>
+              <select
+                id="proxy"
+                value={proxy}
+                onChange={(e) => setProxy(e.target.value as "auto" | "us" | "none")}
+              >
+                <option value="auto">Auto (on for real external sites)</option>
+                <option value="us">Always on (US)</option>
+                <option value="none">Always off</option>
+              </select>
+              <p style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 4 }}>
+                Bot-protected sites (Cloudflare, etc.) usually need this. Requires a Solari plan
+                that supports stealth + proxy together — a free-tier key will silently run a
+                degraded, unprotected session instead (you&apos;ll see a warning in the report if
+                that happens).
+              </p>
             </div>
             <div className="form-row">
               <label htmlFor="byok">Bring your own Solari key (optional)</label>
