@@ -410,7 +410,7 @@ async function resolveViaUnassociatedLabel(
 
   let cssSelector: string | null = null;
   try {
-    cssSelector = await page.evaluate(
+    const result = await page.evaluate(
       ({ words, fillableSelector }: { words: string[]; fillableSelector: string }) => {
         const doc = (globalThis as any).document;
         const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
@@ -420,6 +420,14 @@ async function resolveViaUnassociatedLabel(
           return r.width > 0 && r.height > 0;
         };
 
+        // TEMPORARY diagnostics (§ live debug, remove once the real
+        // production mismatch is found): this function's logic checks out
+        // against every local repro so far, yet still returns null on the
+        // real deployed page — these counters travel back to Node so they
+        // can be console.error'd into the runner's logs, since page-context
+        // console.log doesn't reach them.
+        const debug = { labelCount: 0, spanDivPCount: 0, textMatches: [] as string[], visibleTextMatches: [] as string[] };
+
         // Two passes, real <label>s first and ONLY falling back to generic
         // span/div/p text if no <label> anywhere on the page yields a
         // usable answer. Confirmed live to matter: a real page's incidental
@@ -428,14 +436,14 @@ async function resolveViaUnassociatedLabel(
         // some <div> or <span> that has nothing to do with the actual form
         // — real <label> elements are a far more deliberate, reliable
         // signal, so they get the first and much stronger look.
-        const passes = [
-          Array.from(doc.querySelectorAll("label")) as any[],
-          Array.from(doc.querySelectorAll("span, div, p")) as any[],
-        ];
+        const labelPass = Array.from(doc.querySelectorAll("label")) as any[];
+        const spanDivPPass = Array.from(doc.querySelectorAll("span, div, p")) as any[];
+        const passes = [labelPass, spanDivPPass];
+        debug.labelCount = labelPass.length;
+        debug.spanDivPCount = spanDivPPass.length;
 
         for (const labelLike of passes) {
         for (const el of labelLike) {
-          if (!isVisible(el)) continue;
           // Only the element's OWN direct text (not children's), so a big
           // wrapping <div> around the whole form doesn't spuriously "match"
           // every field's label text concatenated together.
@@ -448,6 +456,9 @@ async function resolveViaUnassociatedLabel(
           const elWords = norm(ownText);
           const allPresent = words.every((w) => elWords.includes(w));
           if (!allPresent) continue;
+          debug.textMatches.push(`${el.tagName}:"${ownText}"`);
+          if (!isVisible(el)) continue;
+          debug.visibleTextMatches.push(`${el.tagName}:"${ownText}"`);
 
           // If it's a real <label for="...">, that association would have
           // already been caught by getByLabel() above — this path exists
@@ -464,33 +475,18 @@ async function resolveViaUnassociatedLabel(
           // browser-global context tsc has no DOM lib visibility into here,
           // and ids/names/placeholders are virtually never anything more
           // exotic than that in practice.
-          // A REAL, confirmed-live bug this fixes: this was originally a
-          // hard `return null` here (aborting the WHOLE scan, not just this
-          // one label candidate) when a nearby field had none of
-          // id/name/placeholder to build a selector from. demoqa.com's real
-          // page — like most real sites — carries ad content in the DOM
-          // (visible "Advertisement" placeholder blocks, confirmed live via
-          // an accessibility-tree read of the page) that can easily contain
-          // incidental text overlapping a target word ("email" is a common
-          // ad-copy word) near some unrelated, attribute-less input earlier
-          // in document order than the real field's label. That single
-          // false lead was enough to kill this entire fallback before it
-          // ever reached the correct, further-down "Email" label — which is
-          // exactly the 10/10 ELEMENT_NOT_FOUND failure confirmed live
-          // against the real deployed runner. `break` (out of the inner
-          // ancestor-walk loop only) lets the outer loop try the next
-          // label-like candidate instead of giving up outright.
           const escapeAttr = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
           let container = el.parentElement;
           let matchedButUnusable = false;
           for (let depth = 0; depth < 4 && container; depth++) {
             const field = container.querySelector(fillableSelector);
             if (field) {
-              if (field.id) return `#${field.id.replace(/([^a-zA-Z0-9_-])/g, "\\$1")}`;
-              if (field.name) return `${field.tagName.toLowerCase()}[name="${escapeAttr(field.name)}"]`;
+              if (field.id) return { selector: `#${field.id.replace(/([^a-zA-Z0-9_-])/g, "\\$1")}`, debug };
+              if (field.name)
+                return { selector: `${field.tagName.toLowerCase()}[name="${escapeAttr(field.name)}"]`, debug };
               // Last resort: a stable-enough path via placeholder, if present.
               const placeholder = field.getAttribute("placeholder");
-              if (placeholder) return `[placeholder="${escapeAttr(placeholder)}"]`;
+              if (placeholder) return { selector: `[placeholder="${escapeAttr(placeholder)}"]`, debug };
               matchedButUnusable = true;
               break;
             }
@@ -499,11 +495,21 @@ async function resolveViaUnassociatedLabel(
           if (matchedButUnusable) continue;
         }
         }
-        return null;
+        return { selector: null, debug };
       },
       { words, fillableSelector },
     );
-  } catch {
+    cssSelector = result.selector;
+    if (!cssSelector) {
+      console.error(
+        `[tenfold-core] resolveViaUnassociatedLabel found nothing for "${needle}" — ` +
+          `labels=${result.debug.labelCount} spanDivP=${result.debug.spanDivPCount} ` +
+          `textMatches=${JSON.stringify(result.debug.textMatches)} ` +
+          `visibleTextMatches=${JSON.stringify(result.debug.visibleTextMatches)}`,
+      );
+    }
+  } catch (err) {
+    console.error(`[tenfold-core] resolveViaUnassociatedLabel threw for "${needle}":`, err);
     return null;
   }
 
