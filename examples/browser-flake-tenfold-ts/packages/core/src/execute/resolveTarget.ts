@@ -410,28 +410,21 @@ async function resolveViaUnassociatedLabel(
 
   let cssSelector: string | null = null;
   try {
-    const result = await page.evaluate(
+    cssSelector = await page.evaluate(
       ({ words, fillableSelector }: { words: string[]; fillableSelector: string }) => {
-        // MUST be the first statement. Root cause of every prior attempt
-        // silently failing: tsx/esbuild's `keepNames` behavior rewrites
-        // named function/arrow const declarations into
+        // MUST be the first statement. tsx/esbuild's `keepNames` behavior
+        // rewrites named function/arrow const declarations into
         // `const foo = /* @__PURE__ */ __name((...) => {...}, "foo")`,
         // baked directly into the literal source esbuild hands to Node —
         // and Playwright's page.evaluate() serializes this function via
         // `.toString()` and re-runs that exact source in the BROWSER's own
         // global scope, where esbuild's shared `__name` helper (defined
-        // once elsewhere in the bundle) does not exist. Every local const
-        // below (`norm`, `isVisible`, `escapeAttr`) got this treatment,
-        // so this function has been throwing
-        // `ReferenceError: __name is not defined` on its very first
-        // wrapped declaration on EVERY call since it was introduced —
-        // confirmed live via the runner's own logs — meaning none of this
-        // function's actual matching logic had ever executed in
-        // production, despite checking out perfectly against the real
-        // page when the same logic was pasted directly into a live
-        // browser console (which never passes through esbuild at all).
-        // A harmless shim resolves it without needing to touch the
-        // project's tsx/esbuild config.
+        // once elsewhere in the bundle) does not exist. Without this shim,
+        // every named const below throws `ReferenceError: __name is not
+        // defined` on evaluation, silently swallowed by the try/catch below
+        // — confirmed live via the runner's own logs. A harmless
+        // passthrough shim resolves it without touching the project's
+        // tsx/esbuild config.
         if (!(globalThis as any).__name) (globalThis as any).__name = (fn: any) => fn;
 
         const doc = (globalThis as any).document;
@@ -442,8 +435,6 @@ async function resolveViaUnassociatedLabel(
           return r.width > 0 && r.height > 0;
         };
 
-        const debug = { labelCount: 0, spanDivPCount: 0, textMatches: [] as string[], visibleTextMatches: [] as string[] };
-
         // Two passes, real <label>s first and ONLY falling back to generic
         // span/div/p text if no <label> anywhere on the page yields a
         // usable answer. Confirmed live to matter: a real page's incidental
@@ -452,11 +443,10 @@ async function resolveViaUnassociatedLabel(
         // some <div> or <span> that has nothing to do with the actual form
         // — real <label> elements are a far more deliberate, reliable
         // signal, so they get the first and much stronger look.
-        const labelPass = Array.from(doc.querySelectorAll("label")) as any[];
-        const spanDivPPass = Array.from(doc.querySelectorAll("span, div, p")) as any[];
-        const passes = [labelPass, spanDivPPass];
-        debug.labelCount = labelPass.length;
-        debug.spanDivPCount = spanDivPPass.length;
+        const passes = [
+          Array.from(doc.querySelectorAll("label")) as any[],
+          Array.from(doc.querySelectorAll("span, div, p")) as any[],
+        ];
 
         for (const labelLike of passes) {
         for (const el of labelLike) {
@@ -472,9 +462,7 @@ async function resolveViaUnassociatedLabel(
           const elWords = norm(ownText);
           const allPresent = words.every((w) => elWords.includes(w));
           if (!allPresent) continue;
-          debug.textMatches.push(`${el.tagName}:"${ownText}"`);
           if (!isVisible(el)) continue;
-          debug.visibleTextMatches.push(`${el.tagName}:"${ownText}"`);
 
           // If it's a real <label for="...">, that association would have
           // already been caught by getByLabel() above — this path exists
@@ -497,12 +485,11 @@ async function resolveViaUnassociatedLabel(
           for (let depth = 0; depth < 4 && container; depth++) {
             const field = container.querySelector(fillableSelector);
             if (field) {
-              if (field.id) return { selector: `#${field.id.replace(/([^a-zA-Z0-9_-])/g, "\\$1")}`, debug };
-              if (field.name)
-                return { selector: `${field.tagName.toLowerCase()}[name="${escapeAttr(field.name)}"]`, debug };
+              if (field.id) return `#${field.id.replace(/([^a-zA-Z0-9_-])/g, "\\$1")}`;
+              if (field.name) return `${field.tagName.toLowerCase()}[name="${escapeAttr(field.name)}"]`;
               // Last resort: a stable-enough path via placeholder, if present.
               const placeholder = field.getAttribute("placeholder");
-              if (placeholder) return { selector: `[placeholder="${escapeAttr(placeholder)}"]`, debug };
+              if (placeholder) return `[placeholder="${escapeAttr(placeholder)}"]`;
               matchedButUnusable = true;
               break;
             }
@@ -511,19 +498,10 @@ async function resolveViaUnassociatedLabel(
           if (matchedButUnusable) continue;
         }
         }
-        return { selector: null, debug };
+        return null;
       },
       { words, fillableSelector },
     );
-    cssSelector = result.selector;
-    if (!cssSelector) {
-      console.error(
-        `[tenfold-core] resolveViaUnassociatedLabel found nothing for "${needle}" — ` +
-          `labels=${result.debug.labelCount} spanDivP=${result.debug.spanDivPCount} ` +
-          `textMatches=${JSON.stringify(result.debug.textMatches)} ` +
-          `visibleTextMatches=${JSON.stringify(result.debug.visibleTextMatches)}`,
-      );
-    }
   } catch (err) {
     console.error(`[tenfold-core] resolveViaUnassociatedLabel threw for "${needle}":`, err);
     return null;
