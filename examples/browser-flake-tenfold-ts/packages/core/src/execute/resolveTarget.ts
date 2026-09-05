@@ -412,6 +412,28 @@ async function resolveViaUnassociatedLabel(
   try {
     const result = await page.evaluate(
       ({ words, fillableSelector }: { words: string[]; fillableSelector: string }) => {
+        // MUST be the first statement. Root cause of every prior attempt
+        // silently failing: tsx/esbuild's `keepNames` behavior rewrites
+        // named function/arrow const declarations into
+        // `const foo = /* @__PURE__ */ __name((...) => {...}, "foo")`,
+        // baked directly into the literal source esbuild hands to Node —
+        // and Playwright's page.evaluate() serializes this function via
+        // `.toString()` and re-runs that exact source in the BROWSER's own
+        // global scope, where esbuild's shared `__name` helper (defined
+        // once elsewhere in the bundle) does not exist. Every local const
+        // below (`norm`, `isVisible`, `escapeAttr`) got this treatment,
+        // so this function has been throwing
+        // `ReferenceError: __name is not defined` on its very first
+        // wrapped declaration on EVERY call since it was introduced —
+        // confirmed live via the runner's own logs — meaning none of this
+        // function's actual matching logic had ever executed in
+        // production, despite checking out perfectly against the real
+        // page when the same logic was pasted directly into a live
+        // browser console (which never passes through esbuild at all).
+        // A harmless shim resolves it without needing to touch the
+        // project's tsx/esbuild config.
+        if (!(globalThis as any).__name) (globalThis as any).__name = (fn: any) => fn;
+
         const doc = (globalThis as any).document;
         const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
 
@@ -420,12 +442,6 @@ async function resolveViaUnassociatedLabel(
           return r.width > 0 && r.height > 0;
         };
 
-        // TEMPORARY diagnostics (§ live debug, remove once the real
-        // production mismatch is found): this function's logic checks out
-        // against every local repro so far, yet still returns null on the
-        // real deployed page — these counters travel back to Node so they
-        // can be console.error'd into the runner's logs, since page-context
-        // console.log doesn't reach them.
         const debug = { labelCount: 0, spanDivPCount: 0, textMatches: [] as string[], visibleTextMatches: [] as string[] };
 
         // Two passes, real <label>s first and ONLY falling back to generic
