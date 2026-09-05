@@ -415,19 +415,25 @@ async function resolveViaUnassociatedLabel(
         const doc = (globalThis as any).document;
         const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
 
-        // Candidate label-like elements: real <label>s first (even if
-        // unassociated), then small heading/span/div text nodes some sites
-        // use instead of a real <label> — kept last and still gated behind
-        // "every significant word of the needle appears in this element's
-        // own direct text" so a false match needs real textual overlap, not
-        // just being nearby.
-        const labelLike = Array.from(doc.querySelectorAll("label, span, div, p")) as any[];
-
         const isVisible = (el: any) => {
           const r = el.getBoundingClientRect();
           return r.width > 0 && r.height > 0;
         };
 
+        // Two passes, real <label>s first and ONLY falling back to generic
+        // span/div/p text if no <label> anywhere on the page yields a
+        // usable answer. Confirmed live to matter: a real page's incidental
+        // ad/promo copy (demoqa.com visibly carries "Advertisement" blocks)
+        // can easily contain a target word ("email" is common ad copy) in
+        // some <div> or <span> that has nothing to do with the actual form
+        // — real <label> elements are a far more deliberate, reliable
+        // signal, so they get the first and much stronger look.
+        const passes = [
+          Array.from(doc.querySelectorAll("label")) as any[],
+          Array.from(doc.querySelectorAll("span, div, p")) as any[],
+        ];
+
+        for (const labelLike of passes) {
         for (const el of labelLike) {
           if (!isVisible(el)) continue;
           // Only the element's OWN direct text (not children's), so a big
@@ -458,8 +464,25 @@ async function resolveViaUnassociatedLabel(
           // browser-global context tsc has no DOM lib visibility into here,
           // and ids/names/placeholders are virtually never anything more
           // exotic than that in practice.
+          // A REAL, confirmed-live bug this fixes: this was originally a
+          // hard `return null` here (aborting the WHOLE scan, not just this
+          // one label candidate) when a nearby field had none of
+          // id/name/placeholder to build a selector from. demoqa.com's real
+          // page — like most real sites — carries ad content in the DOM
+          // (visible "Advertisement" placeholder blocks, confirmed live via
+          // an accessibility-tree read of the page) that can easily contain
+          // incidental text overlapping a target word ("email" is a common
+          // ad-copy word) near some unrelated, attribute-less input earlier
+          // in document order than the real field's label. That single
+          // false lead was enough to kill this entire fallback before it
+          // ever reached the correct, further-down "Email" label — which is
+          // exactly the 10/10 ELEMENT_NOT_FOUND failure confirmed live
+          // against the real deployed runner. `break` (out of the inner
+          // ancestor-walk loop only) lets the outer loop try the next
+          // label-like candidate instead of giving up outright.
           const escapeAttr = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
           let container = el.parentElement;
+          let matchedButUnusable = false;
           for (let depth = 0; depth < 4 && container; depth++) {
             const field = container.querySelector(fillableSelector);
             if (field) {
@@ -468,10 +491,13 @@ async function resolveViaUnassociatedLabel(
               // Last resort: a stable-enough path via placeholder, if present.
               const placeholder = field.getAttribute("placeholder");
               if (placeholder) return `[placeholder="${escapeAttr(placeholder)}"]`;
-              return null;
+              matchedButUnusable = true;
+              break;
             }
             container = container.parentElement;
           }
+          if (matchedButUnusable) continue;
+        }
         }
         return null;
       },
