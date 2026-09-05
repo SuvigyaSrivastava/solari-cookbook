@@ -13,6 +13,34 @@ function resolveExecutablePath(): string | undefined {
   return existsSync(PINNED_CHROMIUM) ? PINNED_CHROMIUM : undefined;
 }
 
+// Confirmed live on Render's free tier (512MB/0.1 CPU): 3 concurrent
+// mock-mode Chromium processes OOM'd against a normal, moderately heavy real
+// site (demoqa.com) even though the same cap was comfortably fine against
+// Flakemart's deliberately tiny demo page. The gap is per-instance memory,
+// not concurrency — a default `chromium.launch()` keeps GPU compositing,
+// background networking/sync, and other desktop-browser subsystems active
+// that a scripted, invisible test run never touches, and each one costs RAM
+// per browser. These flags turn that off. They don't change what a run can
+// see or assert on (DOM, network, screenshots — including failure replay
+// screenshots — all still render normally), only what Chromium keeps warm in
+// the background. This raises how heavy a target site can be before tipping
+// a free-tier instance over; it doesn't remove the ceiling entirely — a
+// sufficiently heavy page at maxConcurrency can still OOM a 512MB box.
+const LOW_MEMORY_CHROMIUM_ARGS = [
+  "--disable-dev-shm-usage", // use disk instead of tiny /dev/shm for tab data
+  "--disable-gpu", // no GPU in this headless server context anyway
+  "--disable-extensions",
+  "--disable-background-networking",
+  "--disable-background-timer-throttling",
+  "--disable-backgrounding-occluded-windows",
+  "--disable-default-apps",
+  "--disable-sync",
+  "--disable-translate",
+  "--metrics-recording-only",
+  "--no-first-run",
+  "--js-flags=--max-old-space-size=128", // cap V8 heap growth per tab
+];
+
 /**
  * Local/mock Solari client: launches a real local headless Chromium via
  * Playwright instead of a real Solari cloud session.
@@ -38,6 +66,7 @@ export function createLocalSolariClient(): SolariClient {
       const browser = await chromium.launch({
         headless: true,
         executablePath: resolveExecutablePath(),
+        args: LOW_MEMORY_CHROMIUM_ARGS,
         ...(proxyServer
           ? { proxy: { server: proxyServer, bypass: "localhost,127.0.0.1,<local>" } }
           : {}),
